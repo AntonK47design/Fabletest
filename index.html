@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>EMBER DRIFT</title>
+<style>
+  @font-face { font-family: 'fallback'; src: local('Courier New'); }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    background: #0b0a14;
+    overflow: hidden;
+    font-family: 'Courier New', monospace;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+  }
+  #wrap {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #game {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    box-shadow: 0 0 80px rgba(255, 120, 40, 0.12), 0 0 200px rgba(80, 40, 160, 0.15);
+    border-radius: 4px;
+  }
+  /* CRT overlay */
+  #crt {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background:
+      repeating-linear-gradient(0deg,
+        rgba(0,0,0,0.00) 0px,
+        rgba(0,0,0,0.00) 2px,
+        rgba(0,0,0,0.14) 3px,
+        rgba(0,0,0,0.14) 4px);
+    mix-blend-mode: multiply;
+    z-index: 10;
+  }
+  #vignette {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(5,3,12,0.55) 100%);
+    z-index: 11;
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game"></canvas></div>
+<div id="crt"></div>
+<div id="vignette"></div>
+<script>
+"use strict";
+
+/* ============================================================
+   EMBER DRIFT — a tiny indie arcade game
+   You are a drifting ember. Collect wisps. Dodge the shades.
+   ============================================================ */
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+// Internal resolution (pixel-art scale)
+const W = 480, H = 300;
+canvas.width = W;
+canvas.height = H;
+
+function fitCanvas() {
+  const s = Math.min(window.innerWidth / W, window.innerHeight / H) * 0.96;
+  canvas.style.width  = Math.floor(W * s) + "px";
+  canvas.style.height = Math.floor(H * s) + "px";
+}
+window.addEventListener("resize", fitCanvas);
+fitCanvas();
+
+/* ---------- palette ---------- */
+const PAL = {
+  bg0: "#0b0a14", bg1: "#141226", bg2: "#1d1a33",
+  ember: "#ffb347", emberHot: "#ffe8b0", emberCore: "#fff6e0",
+  wisp: "#7df9ff", wispDim: "#3fb8c9",
+  shade: "#b14aed", shadeDim: "#5b2380",
+  danger: "#ff4a6a",
+  text: "#e8e0d0", textDim: "#9088a0",
+  gold: "#ffd700"
+};
+
+/* ---------- utils ---------- */
+const rnd  = (a, b) => a + Math.random() * (b - a);
+const rndi = (a, b) => Math.floor(rnd(a, b + 1));
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const lerp = (a, b, t) => a + (b - a) * t;
+const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; };
+const TAU = Math.PI * 2;
+
+/* ---------- audio (tiny chiptune synth) ---------- */
+let AC = null;
+function audio() {
+  if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+  if (AC.state === "suspended") AC.resume();
+  return AC;
+}
+function beep(freq, dur, type = "square", vol = 0.08, slide = 0) {
+  try {
+    const ac = audio();
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, ac.currentTime);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), ac.currentTime + dur);
+    g.gain.setValueAtTime(vol, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + dur);
+    o.connect(g).connect(ac.destination);
+    o.start();
+    o.stop(ac.currentTime + dur);
+  } catch (e) { /* audio blocked until interaction */ }
+}
+const sfx = {
+  collect(combo) { beep(520 + combo * 60, 0.12, "square", 0.06, 200); },
+  dash()    { beep(220, 0.15, "sawtooth", 0.05, -120); },
+  hit()     { beep(110, 0.4, "sawtooth", 0.12, -70); beep(55, 0.5, "square", 0.1, -20); },
+  start()   { beep(330, 0.1, "square", 0.05); setTimeout(() => beep(440, 0.1, "square", 0.05), 90); setTimeout(() => beep(660, 0.18, "square", 0.06), 180); },
+  near()    { beep(880, 0.05, "triangle", 0.025); }
+};
+
+/* ---------- input ---------- */
+const keys = {};
+let touchVec = null;
+window.addEventListener("keydown", e => {
+  keys[e.code] = true;
+  if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code)) e.preventDefault();
+  if (state === "title" || state === "over") tryStart(e.code);
+  if (e.code === "Space") wantDash = true;
+});
+window.addEventListener("keyup", e => keys[e.code] = false);
+
+// touch: drag to steer, tap with second finger to dash
+let touchStart = null;
+canvas.addEventListener("pointerdown", e => {
+  audio();
+  if (state === "title" || state === "over") { tryStart("Space"); return; }
+  if (touchStart === null) {
+    touchStart = { id: e.pointerId, x: e.clientX, y: e.clientY };
+  } else {
+    wantDash = true;
+  }
+});
+window.addEventListener("pointermove", e => {
+  if (touchStart && e.pointerId === touchStart.id) {
+    const dx = e.clientX - touchStart.x, dy = e.clientY - touchStart.y;
+    const m = Math.hypot(dx, dy);
+    touchVec = m > 8 ? { x: dx / m, y: dy / m, m: clamp(m / 50, 0, 1) } : null;
+  }
+});
+window.addEventListener("pointerup", e => {
+  if (touchStart && e.pointerId === touchStart.id) { touchStart = null; touchVec = null; }
+});
+
+/* ---------- game state ---------- */
+let state = "title";          // title | play | over
+let t = 0;                    // global time
+let score = 0, best = +(localStorage.getItem("emberdrift_best") || 0);
+let combo = 0, comboTimer = 0;
+let shake = 0, flash = 0, slowmo = 0;
+let wantDash = false;
+let overTimer = 0;
+
+const player = {
+  x: W / 2, y: H / 2, vx: 0, vy: 0,
+  r: 5, angle: 0,
+  dashCd: 0, dashT: 0, alive: true,
+  trail: []
+};
+
+let wisps = [];     // collectibles
+let shades = [];    // enemies
+let parts = [];     // particles
+let stars = [];     // background
+let embers = [];    // ambient floating motes
+
+function makeStars() {
+  stars = [];
+  for (let i = 0; i < 70; i++) {
+    stars.push({ x: rnd(0, W), y: rnd(0, H), z: rnd(0.2, 1), tw: rnd(0, TAU) });
+  }
+  embers = [];
+  for (let i = 0; i < 18; i++) {
+    embers.push({ x: rnd(0, W), y: rnd(0, H), s: rnd(0.5, 1.6), ph: rnd(0, TAU) });
+  }
+}
+makeStars();
+
+function spawnWisp() {
+  let x, y, tries = 0;
+  do {
+    x = rnd(30, W - 30); y = rnd(30, H - 30); tries++;
+  } while (dist2(x, y, player.x, player.y) < 80 * 80 && tries < 20);
+  wisps.push({ x, y, ph: rnd(0, TAU), r: 4, pulse: 0 });
+}
+
+function spawnShade() {
+  // spawn at edge, away from player
+  let x, y;
+  const side = rndi(0, 3);
+  if (side === 0) { x = -15; y = rnd(0, H); }
+  else if (side === 1) { x = W + 15; y = rnd(0, H); }
+  else if (side === 2) { x = rnd(0, W); y = -15; }
+  else { x = rnd(0, W); y = H + 15; }
+  const speed = rnd(0.55, 0.85) + Math.min(score * 0.004, 0.9);
+  shades.push({
+    x, y, vx: 0, vy: 0, speed,
+    r: rnd(6, 9), wob: rnd(0, TAU),
+    type: Math.random() < 0.25 && score > 8 ? "darter" : "seeker",
+    darting: 0, dartCd: rnd(2, 4)
+  });
+}
+
+function burst(x, y, color, n, spd, life) {
+  for (let i = 0; i < n; i++) {
+    const a = rnd(0, TAU), s = rnd(spd * 0.3, spd);
+    parts.push({
+      x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+      life: rnd(life * 0.5, life), max: life, color, size: rnd(1, 2.5)
+    });
+  }
+}
+
+function reset() {
+  player.x = W / 2; player.y = H / 2;
+  player.vx = player.vy = 0;
+  player.dashCd = 0; player.dashT = 0;
+  player.alive = true;
+  player.trail = [];
+  wisps = []; shades = []; parts = [];
+  score = 0; combo = 0; comboTimer = 0;
+  shake = 0; flash = 0; slowmo = 0;
+  for (let i = 0; i < 3; i++) spawnWisp();
+  shadeSpawnT = 3;
+}
+
+function tryStart(code) {
+  if (state === "over" && overTimer < 0.8) return; // prevent accidental restart
+  if (["Space","Enter","KeyW","KeyA","KeyS","KeyD","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(code)) {
+    reset();
+    state = "play";
+    sfx.start();
+  }
+}
+
+let shadeSpawnT = 3;
+
+/* ---------- update ---------- */
+function update(dt) {
+  t += dt;
+  if (shake > 0) shake = Math.max(0, shake - dt * 30);
+  if (flash > 0) flash = Math.max(0, flash - dt * 3);
+  if (slowmo > 0) slowmo = Math.max(0, slowmo - dt);
+  if (comboTimer > 0) { comboTimer -= dt; if (comboTimer <= 0) combo = 0; }
+
+  const ts = slowmo > 0 ? 0.35 : 1; // time scale
+  const d = dt * ts;
+
+  // ambient motes
+  for (const e of embers) {
+    e.ph += dt;
+    e.x += Math.sin(e.ph * 0.7) * 0.1 * e.s;
+    e.y -= 0.08 * e.s;
+    if (e.y < -5) { e.y = H + 5; e.x = rnd(0, W); }
+  }
+
+  // particles
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i];
+    p.x += p.vx * d * 60; p.y += p.vy * d * 60;
+    p.vx *= 0.94; p.vy *= 0.94;
+    p.life -= dt;
+    if (p.life <= 0) parts.splice(i, 1);
+  }
+
+  if (state !== "play") {
+    if (state === "over") overTimer += dt;
+    return;
+  }
+
+  /* --- player movement --- */
+  let ax = 0, ay = 0;
+  if (keys.ArrowLeft  || keys.KeyA) ax -= 1;
+  if (keys.ArrowRight || keys.KeyD) ax += 1;
+  if (keys.ArrowUp    || keys.KeyW) ay -= 1;
+  if (keys.ArrowDown  || keys.KeyS) ay += 1;
+  if (touchVec) { ax = touchVec.x * touchVec.m; ay = touchVec.y * touchVec.m; }
+  const am = Math.hypot(ax, ay);
+  if (am > 1) { ax /= am; ay /= am; }
+
+  const ACC = 420, FRIC = 0.90, MAXV = 165;
+  player.vx += ax * ACC * d;
+  player.vy += ay * ACC * d;
+  player.vx *= Math.pow(FRIC, d * 60);
+  player.vy *= Math.pow(FRIC, d * 60);
+  const v = Math.hypot(player.vx, player.vy);
+  if (v > MAXV && player.dashT <= 0) { player.vx = player.vx / v * MAXV; player.vy = player.vy / v * MAXV; }
+
+  // dash
+  player.dashCd = Math.max(0, player.dashCd - dt);
+  if (player.dashT > 0) player.dashT -= dt;
+  if (wantDash && player.dashCd <= 0 && (am > 0.1 || v > 20)) {
+    const dxn = am > 0.1 ? ax : player.vx / v;
+    const dyn = am > 0.1 ? ay : player.vy / v;
+    player.vx = dxn * 420; player.vy = dyn * 420;
+    player.dashCd = 1.4; player.dashT = 0.16;
+    burst(player.x, player.y, PAL.emberHot, 14, 3, 0.4);
+    shake = Math.max(shake, 2.5);
+    sfx.dash();
+  }
+  wantDash = false;
+
+  player.x += player.vx * d;
+  player.y += player.vy * d;
+
+  // soft walls
+  const pad = 8;
+  if (player.x < pad)     { player.x = pad;     player.vx *= -0.5; }
+  if (player.x > W - pad) { player.x = W - pad; player.vx *= -0.5; }
+  if (player.y < pad)     { player.y = pad;     player.vy *= -0.5; }
+  if (player.y > H - pad) { player.y = H - pad; player.vy *= -0.5; }
+
+  if (v > 5) player.angle = Math.atan2(player.vy, player.vx);
+  player.trail.unshift({ x: player.x, y: player.y, dash: player.dashT > 0 });
+  if (player.trail.length > 16) player.trail.pop();
+
+  // ember exhaust particles
+  if (Math.random() < 0.6) {
+    parts.push({
+      x: player.x + rnd(-2, 2), y: player.y + rnd(-2, 2),
+      vx: -player.vx * 0.004 + rnd(-0.3, 0.3), vy: -player.vy * 0.004 + rnd(-0.5, -0.1),
+      life: rnd(0.3, 0.7), max: 0.7, color: PAL.ember, size: rnd(1, 2)
+    });
+  }
+
+  /* --- wisps --- */
+  for (let i = wisps.length - 1; i >= 0; i--) {
+    const wsp = wisps[i];
+    wsp.ph += dt * 3;
+    wsp.pulse = Math.max(0, wsp.pulse - dt * 4);
+    // gentle attraction when close
+    const dd = dist2(wsp.x, wsp.y, player.x, player.y);
+    if (dd < 45 * 45) {
+      const m = Math.sqrt(dd) || 1;
+      wsp.x += (player.x - wsp.x) / m * 70 * d;
+      wsp.y += (player.y - wsp.y) / m * 70 * d;
+    }
+    if (dd < (player.r + wsp.r + 3) ** 2) {
+      wisps.splice(i, 1);
+      combo = Math.min(combo + 1, 8);
+      comboTimer = 3;
+      score += combo;
+      sfx.collect(combo);
+      burst(wsp.x, wsp.y, PAL.wisp, 16, 2.6, 0.55);
+      burst(wsp.x, wsp.y, "#ffffff", 5, 1.2, 0.3);
+      shake = Math.max(shake, 1.5);
+      spawnWisp();
+      if (wisps.length < 2 + Math.floor(score / 25)) spawnWisp();
+    }
+  }
+
+  /* --- shades --- */
+  shadeSpawnT -= dt;
+  const targetShades = clamp(2 + Math.floor(score / 12), 2, 11);
+  if (shadeSpawnT <= 0 && shades.length < targetShades) {
+    spawnShade();
+    shadeSpawnT = rnd(1.2, 2.8);
+  }
+
+  let nearDanger = false;
+  for (const s of shades) {
+    s.wob += dt * 4;
+    const dx = player.x - s.x, dy = player.y - s.y;
+    const m = Math.hypot(dx, dy) || 1;
+
+    if (s.type === "darter") {
+      s.dartCd -= dt;
+      if (s.dartCd <= 0 && m < 150) {
+        s.darting = 0.45;
+        s.dartCd = rnd(2.5, 4);
+        s.dvx = dx / m * 260; s.dvy = dy / m * 260;
+        burst(s.x, s.y, PAL.shade, 8, 2, 0.4);
+      }
+      if (s.darting > 0) {
+        s.darting -= dt;
+        s.x += s.dvx * d; s.y += s.dvy * d;
+      } else {
+        s.x += dx / m * s.speed * 35 * d;
+        s.y += dy / m * s.speed * 35 * d;
+      }
+    } else {
+      // seeker with wobble
+      s.x += (dx / m * s.speed * 50 + Math.cos(s.wob) * 14) * d;
+      s.y += (dy / m * s.speed * 50 + Math.sin(s.wob * 1.3) * 14) * d;
+    }
+
+    // near-miss tension
+    if (m < 30 && m > player.r + s.r + 2) nearDanger = true;
+
+    // collision (dash gives brief grace)
+    if (player.dashT <= 0 && dist2(s.x, s.y, player.x, player.y) < (player.r + s.r - 2) ** 2) {
+      die();
+      break;
+    }
+    // dashing through a shade destroys it!
+    if (player.dashT > 0 && dist2(s.x, s.y, player.x, player.y) < (player.r + s.r + 4) ** 2) {
+      burst(s.x, s.y, PAL.shade, 24, 3.5, 0.7);
+      burst(s.x, s.y, PAL.danger, 8, 2, 0.4);
+      shades.splice(shades.indexOf(s), 1);
+      score += 3;
+      slowmo = 0.25;
+      shake = Math.max(shake, 5);
+      flash = 0.5;
+      beep(700, 0.18, "square", 0.08, -300);
+      break;
+    }
+  }
+  if (nearDanger && Math.random() < 0.08) sfx.near();
+}
+
+function die() {
+  player.alive = false;
+  state = "over";
+  overTimer = 0;
+  shake = 12;
+  flash = 1;
+  slowmo = 1.2;
+  sfx.hit();
+  burst(player.x, player.y, PAL.ember, 40, 4.5, 1);
+  burst(player.x, player.y, PAL.emberHot, 20, 3, 0.8);
+  burst(player.x, player.y, "#ffffff", 10, 2, 0.5);
+  if (score > best) {
+    best = score;
+    localStorage.setItem("emberdrift_best", best);
+  }
+}
+
+/* ---------- render ---------- */
+function px(x, y, w, h, color) { ctx.fillStyle = color; ctx.fillRect(Math.round(x), Math.round(y), w, h); }
+
+function glowCircle(x, y, r, color, alpha = 1) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, color);
+  g.addColorStop(1, "transparent");
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, TAU);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+function drawText(str, x, y, size, color, align = "center") {
+  ctx.fillStyle = color;
+  ctx.font = `bold ${size}px 'Courier New', monospace`;
+  ctx.textAlign = align;
+  ctx.textBaseline = "middle";
+  ctx.fillText(str, Math.round(x), Math.round(y));
+}
+
+function render() {
+  // camera shake
+  ctx.save();
+  if (shake > 0) ctx.translate(rnd(-shake, shake) * 0.5, rnd(-shake, shake) * 0.5);
+
+  // background gradient
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, PAL.bg0);
+  bg.addColorStop(0.6, PAL.bg1);
+  bg.addColorStop(1, PAL.bg2);
+  ctx.fillStyle = bg;
+  ctx.fillRect(-10, -10, W + 20, H + 20);
+
+  // stars
+  for (const s of stars) {
+    const tw = 0.3 + 0.7 * Math.abs(Math.sin(t * 0.8 + s.tw));
+    ctx.globalAlpha = tw * s.z * 0.8;
+    px(s.x, s.y, s.z > 0.7 ? 2 : 1, s.z > 0.7 ? 2 : 1, "#cdc8ff");
+  }
+  ctx.globalAlpha = 1;
+
+  // distant hills (parallax silhouettes)
+  ctx.fillStyle = "#16132a";
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (let x = 0; x <= W; x += 8) {
+    ctx.lineTo(x, H - 40 - Math.sin(x * 0.013 + 2) * 18 - Math.sin(x * 0.031) * 8);
+  }
+  ctx.lineTo(W, H);
+  ctx.fill();
+  ctx.fillStyle = "#1b1733";
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (let x = 0; x <= W; x += 8) {
+    ctx.lineTo(x, H - 22 - Math.sin(x * 0.02 + 5) * 12 - Math.cos(x * 0.045) * 6);
+  }
+  ctx.lineTo(W, H);
+  ctx.fill();
+
+  // ambient motes
+  for (const e of embers) {
+    const a = 0.25 + 0.2 * Math.sin(e.ph * 2);
+    glowCircle(e.x, e.y, 3 * e.s, "rgba(255,170,80,0.5)", a);
+    px(e.x, e.y, 1, 1, PAL.ember);
+  }
+
+  // particles
+  for (const p of parts) {
+    ctx.globalAlpha = clamp(p.life / p.max, 0, 1);
+    px(p.x - p.size / 2, p.y - p.size / 2, Math.ceil(p.size), Math.ceil(p.size), p.color);
+  }
+  ctx.globalAlpha = 1;
+
+  // wisps
+  for (const wsp of wisps) {
+    const bob = Math.sin(wsp.ph) * 2;
+    const y = wsp.y + bob;
+    glowCircle(wsp.x, y, 14 + Math.sin(wsp.ph * 2) * 3, "rgba(125,249,255,0.35)");
+    px(wsp.x - 2, y - 2, 4, 4, PAL.wisp);
+    px(wsp.x - 1, y - 1, 2, 2, "#ffffff");
+    // orbiting sparkle
+    const oa = wsp.ph * 1.7;
+    px(wsp.x + Math.cos(oa) * 8 - 0.5, y + Math.sin(oa) * 8 - 0.5, 1, 1, PAL.wispDim);
+  }
+
+  // shades
+  for (const s of shades) {
+    const r = s.r + Math.sin(s.wob * 2) * 1;
+    const hot = s.type === "darter";
+    glowCircle(s.x, s.y, r * 2.6, hot ? "rgba(255,74,106,0.3)" : "rgba(177,74,237,0.28)");
+    // jagged blob body
+    ctx.fillStyle = hot && s.darting > 0 ? PAL.danger : PAL.shade;
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const a = i / 8 * TAU + s.wob * 0.5;
+      const rr = r * (0.75 + 0.3 * Math.sin(i * 3 + s.wob * 2));
+      const xx = s.x + Math.cos(a) * rr, yy = s.y + Math.sin(a) * rr;
+      i === 0 ? ctx.moveTo(xx, yy) : ctx.lineTo(xx, yy);
+    }
+    ctx.closePath();
+    ctx.fill();
+    // dark core + eye
+    ctx.fillStyle = PAL.shadeDim;
+    ctx.beginPath(); ctx.arc(s.x, s.y, r * 0.55, 0, TAU); ctx.fill();
+    const dx = player.x - s.x, dy = player.y - s.y, m = Math.hypot(dx, dy) || 1;
+    px(s.x + dx / m * 2 - 1.5, s.y + dy / m * 2 - 1.5, 3, 3, hot ? PAL.danger : "#e9c6ff");
+  }
+
+  // player
+  if (player.alive || state === "play") {
+    // trail
+    for (let i = player.trail.length - 1; i >= 0; i--) {
+      const tr = player.trail[i];
+      const a = (1 - i / player.trail.length) * 0.6;
+      ctx.globalAlpha = a;
+      const sz = Math.max(1, (player.r - 1) * (1 - i / player.trail.length));
+      px(tr.x - sz / 2, tr.y - sz / 2, sz, sz, tr.dash ? PAL.emberCore : PAL.ember);
+    }
+    ctx.globalAlpha = 1;
+
+    if (player.alive) {
+      const dashGlow = player.dashT > 0 ? 1.8 : 1;
+      glowCircle(player.x, player.y, 18 * dashGlow, "rgba(255,179,71,0.45)");
+      // flame body (layered squares = pixel flame)
+      const fl = Math.sin(t * 14) * 1.2;
+      px(player.x - 4, player.y - 3 + fl * 0.3, 8, 7, PAL.ember);
+      px(player.x - 3, player.y - 4 + fl * 0.5, 6, 7, PAL.ember);
+      px(player.x - 2, player.y - 2, 4, 5, PAL.emberHot);
+      px(player.x - 1, player.y - 1, 2, 3, PAL.emberCore);
+      // little eyes
+      px(player.x - 2, player.y, 1, 2, "#3a2410");
+      px(player.x + 1, player.y, 1, 2, "#3a2410");
+    }
+  }
+
+  ctx.restore();
+
+  /* --- UI --- */
+  if (state === "play") {
+    drawText(String(score).padStart(4, "0"), W / 2, 18, 18, PAL.text);
+    if (combo > 1) {
+      const pulse = 1 + Math.sin(t * 10) * 0.08;
+      drawText(`x${combo}`, W / 2 + 44, 18, Math.round(11 * pulse), PAL.gold);
+    }
+    // dash cooldown bar
+    const cdw = 50, pct = 1 - player.dashCd / 1.4;
+    px(W / 2 - cdw / 2, 30, cdw, 3, "#2a2440");
+    px(W / 2 - cdw / 2, 30, Math.round(cdw * pct), 3, pct >= 1 ? PAL.wisp : PAL.textDim);
+    if (pct >= 1) drawText("DASH READY", W / 2, 41, 7, PAL.wispDim);
+  }
+
+  if (state === "title") {
+    const bob = Math.sin(t * 2) * 3;
+    ctx.globalAlpha = 0.92;
+    drawText("E M B E R", W / 2, 86 + bob, 38, PAL.ember);
+    drawText("D R I F T", W / 2, 122 + bob, 38, PAL.emberHot);
+    ctx.globalAlpha = 1;
+    glowCircle(W / 2, 104 + bob, 110, "rgba(255,140,50,0.07)");
+    drawText("collect the wisps  ·  dodge the shades", W / 2, 168, 10, PAL.textDim);
+    drawText("dash through shades to destroy them", W / 2, 182, 10, PAL.textDim);
+    if (Math.sin(t * 4) > -0.3) drawText("— press any key or tap to begin —", W / 2, 215, 11, PAL.text);
+    drawText("WASD / arrows to move   ·   SPACE to dash", W / 2, 248, 9, PAL.textDim);
+    if (best > 0) drawText(`best ${best}`, W / 2, 268, 9, PAL.gold);
+  }
+
+  if (state === "over") {
+    ctx.fillStyle = "rgba(8,6,16,0.55)";
+    ctx.fillRect(0, 0, W, H);
+    drawText("THE EMBER FADES", W / 2, 100, 22, PAL.danger);
+    drawText(`score  ${score}`, W / 2, 138, 14, PAL.text);
+    if (score >= best && score > 0) {
+      const pulse = 1 + Math.sin(t * 8) * 0.1;
+      drawText("★ NEW BEST ★", W / 2, 160, Math.round(12 * pulse), PAL.gold);
+    } else {
+      drawText(`best  ${best}`, W / 2, 160, 11, PAL.textDim);
+    }
+    if (overTimer > 0.8 && Math.sin(t * 4) > -0.3) {
+      drawText("— press any key to rekindle —", W / 2, 200, 11, PAL.text);
+    }
+  }
+
+  // hit flash
+  if (flash > 0) {
+    ctx.fillStyle = `rgba(255,240,220,${flash * 0.35})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+/* ---------- main loop ---------- */
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
