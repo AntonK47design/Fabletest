@@ -2,33 +2,20 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>EMBER DRIFT</title>
 <style>
-  @font-face { font-family: 'fallback'; src: local('Courier New'); }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
     height: 100%;
     background: #0b0a14;
     overflow: hidden;
-    font-family: 'Courier New', monospace;
+    font-family: 'Courier New', Courier, monospace;
     user-select: none;
     -webkit-user-select: none;
     touch-action: none;
   }
-  #wrap {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  #game {
-    image-rendering: pixelated;
-    image-rendering: crisp-edges;
-    box-shadow: 0 0 80px rgba(255, 120, 40, 0.12), 0 0 200px rgba(80, 40, 160, 0.15);
-    border-radius: 4px;
-  }
+  #game { position: fixed; inset: 0; display: block; }
   /* CRT overlay */
   #crt {
     position: fixed;
@@ -38,8 +25,8 @@
       repeating-linear-gradient(0deg,
         rgba(0,0,0,0.00) 0px,
         rgba(0,0,0,0.00) 2px,
-        rgba(0,0,0,0.14) 3px,
-        rgba(0,0,0,0.14) 4px);
+        rgba(0,0,0,0.10) 3px,
+        rgba(0,0,0,0.10) 4px);
     mix-blend-mode: multiply;
     z-index: 10;
   }
@@ -47,13 +34,13 @@
     position: fixed;
     inset: 0;
     pointer-events: none;
-    background: radial-gradient(ellipse at center, transparent 55%, rgba(5,3,12,0.55) 100%);
+    background: radial-gradient(ellipse at center, transparent 60%, rgba(5,3,12,0.5) 100%);
     z-index: 11;
   }
 </style>
 </head>
 <body>
-<div id="wrap"><canvas id="game"></canvas></div>
+<canvas id="game"></canvas>
 <div id="crt"></div>
 <div id="vignette"></div>
 <script>
@@ -68,18 +55,44 @@
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 
-// Internal resolution (pixel-art scale)
-const W = 480, H = 300;
-canvas.width = W;
-canvas.height = H;
+/* ---------- safe storage (cross-origin iframes block localStorage) ---------- */
+const store = (() => {
+  const mem = {};
+  let ok = false;
+  try {
+    localStorage.setItem("__ed_t", "1");
+    localStorage.removeItem("__ed_t");
+    ok = true;
+  } catch (e) { ok = false; }
+  return {
+    get(k, dflt) {
+      if (ok) { try { const v = localStorage.getItem(k); if (v !== null) return v; } catch (e) {} }
+      return (k in mem) ? mem[k] : dflt;
+    },
+    set(k, v) {
+      mem[k] = String(v);
+      if (ok) { try { localStorage.setItem(k, String(v)); } catch (e) {} }
+    }
+  };
+})();
 
+/* ---------- responsive canvas (fills a 16:9 iframe, logical height fixed) ---------- */
+let W = 569, H = 320, viewScale = 1;
 function fitCanvas() {
-  const s = Math.min(window.innerWidth / W, window.innerHeight / H) * 0.96;
-  canvas.style.width  = Math.floor(W * s) + "px";
-  canvas.style.height = Math.floor(H * s) + "px";
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const cw = Math.max(1, window.innerWidth), ch = Math.max(1, window.innerHeight);
+  canvas.style.width = cw + "px";
+  canvas.style.height = ch + "px";
+  canvas.width = Math.round(cw * dpr);
+  canvas.height = Math.round(ch * dpr);
+  H = 320;
+  viewScale = canvas.height / H;
+  W = canvas.width / viewScale;
+  makeStars();
+  clampEntities();
 }
+function isPortrait() { return window.innerHeight > window.innerWidth; }
 window.addEventListener("resize", fitCanvas);
-fitCanvas();
 
 /* ---------- palette ---------- */
 const PAL = {
@@ -91,24 +104,26 @@ const PAL = {
   gold: "#ffd700", frost: "#9fd8ff"
 };
 
-/* ---------- zones (level design: the Depths) ---------- */
+/* ---------- zones: each depth changes a rule, not just the palette ----------
+   Depth clock = elapsed run time + score * 0.5, so survival always advances
+   you, and skilled collecting descends faster. */
 const ZONES = [
   { at: 0,   num: "I",   name: "EMBERWOOD",
+    rule: "the shades wander",
     bg: ["#0b0a14", "#141226", "#1d1a33"], hills: ["#16132a", "#1b1733"] },
-  { at: 20,  num: "II",  name: "THE HOLLOW",
+  { at: 45,  num: "II",  name: "THE HOLLOW",
+    rule: "the shades learn to lunge",
     bg: ["#0a0d18", "#101a2e", "#152640"], hills: ["#122038", "#17294c"] },
-  { at: 45,  num: "III", name: "VERDANT ASH",
+  { at: 100, num: "III", name: "VERDANT ASH",
+    rule: "the shades encircle their prey",
     bg: ["#0a120e", "#0f2018", "#143026"], hills: ["#0f2a1e", "#143a2a"] },
-  { at: 75,  num: "IV",  name: "CINDER MAW",
+  { at: 165, num: "IV",  name: "CINDER MAW",
+    rule: "they shatter — but your dash now repels",
     bg: ["#150a0a", "#271212", "#3b1818"], hills: ["#2b1414", "#3b1c18"] },
-  { at: 115, num: "V",   name: "THE VOID CHOIR",
+  { at: 240, num: "V",   name: "THE VOID CHOIR",
+    rule: "the choir sings — surges quicken",
     bg: ["#0d0a18", "#1a1232", "#2b1b4d"], hills: ["#1f153a", "#2b1d52"] },
 ];
-function zoneForScore(sc) {
-  let z = 0;
-  for (let i = 0; i < ZONES.length; i++) if (sc >= ZONES[i].at) z = i;
-  return z;
-}
 
 /* ---------- utils ---------- */
 const rnd  = (a, b) => a + Math.random() * (b - a);
@@ -126,16 +141,19 @@ function lerpRgb(a, b, t) { return [lerp(a[0],b[0],t), lerp(a[1],b[1],t), lerp(a
 const curBg   = ZONES[0].bg.map(hexToRgb);
 const curHill = ZONES[0].hills.map(hexToRgb);
 
-/* ---------- audio (tiny chiptune synth) ---------- */
+/* ---------- audio (tiny chiptune synth, no external assets) ---------- */
 let AC = null;
 function audio() {
-  if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
-  if (AC.state === "suspended") AC.resume();
+  try {
+    if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+    if (AC.state === "suspended") AC.resume();
+  } catch (e) {}
   return AC;
 }
 function beep(freq, dur, type = "square", vol = 0.08, slide = 0) {
   try {
     const ac = audio();
+    if (!ac) return;
     const o = ac.createOscillator(), g = ac.createGain();
     o.type = type;
     o.frequency.setValueAtTime(freq, ac.currentTime);
@@ -164,7 +182,8 @@ const keys = {};
 window.addEventListener("keydown", e => {
   keys[e.code] = true;
   if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code)) e.preventDefault();
-  if (state === "title" || state === "over") tryStart(e.code);
+  inputSeen = true;
+  if (state === "over") { tryRestart(); return; }
   if (e.code === "Space") wantDash = true;
 });
 window.addEventListener("keyup", e => keys[e.code] = false);
@@ -172,8 +191,10 @@ window.addEventListener("keyup", e => keys[e.code] = false);
 /* ---------- input: touch (floating joystick + dash button) ---------- */
 let isTouch = false;                 // shows touch UI once a touch is seen
 let joy = null;                      // { id, bx, by, kx, ky } in canvas coords
-const JOY_R = 26;                    // joystick travel radius
-const dashBtn = { x: W - 38, y: H - 38, r: 22 };
+const JOY_R = 30;                    // joystick travel radius
+const JOY_DEAD = 6;                  // dead zone so a resting thumb doesn't drift
+const DASH_R = 30;                   // thumb-sized dash button
+function dashBtnPos() { return { x: W - DASH_R - 18, y: H - DASH_R - 16 }; }
 
 function canvasPos(e) {
   const r = canvas.getBoundingClientRect();
@@ -183,15 +204,17 @@ function canvasPos(e) {
 canvas.addEventListener("pointerdown", e => {
   audio();
   if (e.pointerType === "touch") isTouch = true;
-  if (state === "title" || state === "over") { tryStart("Space"); return; }
+  inputSeen = true;
+  if (state === "over") { tryRestart(); return; }
   const p = canvasPos(e);
-  // dash button (generous hit area)
-  if (dist2(p.x, p.y, dashBtn.x, dashBtn.y) < (dashBtn.r + 10) ** 2) {
+  const db = dashBtnPos();
+  // dash button (generous hit area beyond the visual)
+  if (dist2(p.x, p.y, db.x, db.y) < (DASH_R + 12) ** 2) {
     wantDash = true;
     return;
   }
   if (joy === null) {
-    // floating joystick spawns where the finger lands
+    // floating joystick spawns where the thumb lands
     joy = { id: e.pointerId, bx: p.x, by: p.y, kx: p.x, ky: p.y };
   } else {
     // any second finger = dash
@@ -219,26 +242,42 @@ function joyVec() {
   if (!joy) return null;
   const dx = joy.kx - joy.bx, dy = joy.ky - joy.by;
   const m = Math.hypot(dx, dy);
-  if (m < 4) return { x: 0, y: 0, m: 0 };
-  return { x: dx / m, y: dy / m, m: clamp(m / JOY_R, 0, 1) };
+  if (m < JOY_DEAD) return { x: 0, y: 0, m: 0 };
+  return { x: dx / m, y: dy / m, m: clamp((m - JOY_DEAD) / (JOY_R - JOY_DEAD), 0, 1) };
 }
 
 /* ---------- game state ---------- */
-let state = "title";          // title | play | over
+let state = "play";           // play | over  (no title gate — land in gameplay)
 let t = 0;                    // global time
-let score = 0, best = +(localStorage.getItem("emberdrift_best") || 0);
+let runT = 0;                 // elapsed time of the current run
+let score = 0, best = +store.get("emberdrift_best", "0") || 0;
 let combo = 0, comboTimer = 0;
 let shake = 0, flash = 0, slowmo = 0;
 let wantDash = false;
 let overTimer = 0;
 
+let inputSeen = false;        // fades the title overlay
+let titleA = 1;               // title-as-overlay alpha, first page view only
+let firstRun = store.get("emberdrift_tut", "0") !== "1";
+let tutStage = firstRun ? 0 : 3;  // 0 steer, 1 collect, 2 dash, 3 done
+let moveHeld = 0;
+
 let zoneIdx = 0, zoneBanner = 0;   // banner countdown for zone announcements
 let frostT = 0;                    // frost power-up: shades slowed
-let surgeT = 40, surgeWarn = 0;    // surge event timers
-let puSpawnT = 14;                 // power-up spawn timer
+let surgeT = 50, surgeWarn = 0;    // surge event timers
+let puSpawnT = 30;                 // power-up spawn timer
+
+const GRACE = 5;                   // seconds before the first shade may spawn
+
+function depthClock() { return runT + score * 0.5; }
+function zoneForClock(c) {
+  let z = 0;
+  for (let i = 0; i < ZONES.length; i++) if (c >= ZONES[i].at) z = i;
+  return z;
+}
 
 const player = {
-  x: W / 2, y: H / 2, vx: 0, vy: 0,
+  x: 280, y: 160, vx: 0, vy: 0,
   r: 5, angle: 0,
   dashCd: 0, dashT: 0, alive: true,
   shield: false, inv: 0,
@@ -254,15 +293,22 @@ let embers = [];    // ambient floating motes
 
 function makeStars() {
   stars = [];
-  for (let i = 0; i < 70; i++) {
+  const n = Math.round(W / 7);
+  for (let i = 0; i < n; i++) {
     stars.push({ x: rnd(0, W), y: rnd(0, H), z: rnd(0.2, 1), tw: rnd(0, TAU) });
   }
   embers = [];
-  for (let i = 0; i < 18; i++) {
+  for (let i = 0; i < Math.round(W / 30); i++) {
     embers.push({ x: rnd(0, W), y: rnd(0, H), s: rnd(0.5, 1.6), ph: rnd(0, TAU) });
   }
 }
-makeStars();
+
+function clampEntities() {
+  player.x = clamp(player.x, 10, W - 10);
+  player.y = clamp(player.y, 10, H - 10);
+  for (const wsp of wisps) { wsp.x = clamp(wsp.x, 20, W - 20); wsp.y = clamp(wsp.y, 20, H - 20); }
+  for (const pu of powerups) { pu.x = clamp(pu.x, 20, W - 20); pu.y = clamp(pu.y, 20, H - 20); }
+}
 
 function spawnWisp() {
   let x, y, tries = 0;
@@ -282,7 +328,7 @@ function edgeSpawnPoint() {
 
 function spawnShade(forceType) {
   const { x, y } = edgeSpawnPoint();
-  const speed = rnd(0.75, 1.05) + Math.min(score * 0.006, 1.1);
+  const speed = rnd(0.55, 0.85) + Math.min(runT * 0.0045, 1.0);
 
   // enemy pool widens as you descend through zones
   let type = forceType;
@@ -296,10 +342,11 @@ function spawnShade(forceType) {
   }
 
   const s = {
-    x, y, vx: 0, vy: 0, speed, type,
+    x, y, speed, type,
     r: rnd(6, 9), wob: rnd(0, TAU),
-    darting: 0, dartCd: rnd(1.5, 3),
+    darting: 0, dartCd: rnd(2, 3.5), windup: 0, dvx: 0, dvy: 0,
     orbA: rnd(0, TAU), orbR: rnd(70, 100), orbDir: Math.random() < 0.5 ? 1 : -1,
+    kvx: 0, kvy: 0,          // knockback from the ignited dash
     small: false
   };
   if (type === "splitter") { s.r = rnd(11, 13); s.speed *= 0.65; }
@@ -341,34 +388,37 @@ function reset() {
   wisps = []; shades = []; parts = []; powerups = [];
   score = 0; combo = 0; comboTimer = 0;
   shake = 0; flash = 0; slowmo = 0;
+  runT = 0;
   zoneIdx = 0; zoneBanner = 0;
-  frostT = 0; surgeT = rnd(35, 45); surgeWarn = 0; puSpawnT = rnd(12, 16);
+  frostT = 0; surgeT = rnd(45, 55); surgeWarn = 0; puSpawnT = rnd(28, 34);
+  wantDash = false;
   joy = null;
   for (let i = 0; i < 4; i++) spawnWisp();
-  shadeSpawnT = 1.5;
+  shadeSpawnT = 0;
 }
 
-function tryStart(code) {
-  if (state === "over" && overTimer < 0.8) return; // prevent accidental restart
-  if (["Space","Enter","KeyW","KeyA","KeyS","KeyD","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(code)) {
-    reset();
-    state = "play";
-    sfx.start();
-  }
+function tryRestart() {
+  if (overTimer < 0.8) return; // prevent accidental restart
+  reset();
+  state = "play";
+  sfx.start();
 }
 
-let shadeSpawnT = 1.5;
+let shadeSpawnT = 0;
 
 function addScore(n) {
   score += n;
-  const z = zoneForScore(score);
+}
+
+function checkZone() {
+  const z = zoneForClock(depthClock());
   if (z > zoneIdx) {
     zoneIdx = z;
-    zoneBanner = 3;
+    zoneBanner = 3.5;
     sfx.zone();
     flash = 0.4;
-    // reward the descent: a moment of calm + fresh wisps
-    slowmo = Math.max(slowmo, 0.5);
+    // telegraph the rule change: a moment of slow-mo + fresh wisps
+    slowmo = Math.max(slowmo, 0.6);
     for (let i = 0; i < 2; i++) spawnWisp();
   }
 }
@@ -383,18 +433,13 @@ function update(dt) {
   if (zoneBanner > 0) zoneBanner -= dt;
   if (frostT > 0) frostT -= dt;
   if (player.inv > 0) player.inv -= dt;
+  if (inputSeen && titleA > 0) titleA = Math.max(0, titleA - dt * 1.5);
 
   // blend palette toward current zone
   const zc = ZONES[zoneIdx];
   const bt = Math.min(dt * 1.2, 1);
-  for (let i = 0; i < 3; i++) {
-    const tgt = hexToRgb(zc.bg[i]);
-    curBg[i] = lerpRgb(curBg[i], tgt, bt);
-  }
-  for (let i = 0; i < 2; i++) {
-    const tgt = hexToRgb(zc.hills[i]);
-    curHill[i] = lerpRgb(curHill[i], tgt, bt);
-  }
+  for (let i = 0; i < 3; i++) curBg[i] = lerpRgb(curBg[i], hexToRgb(zc.bg[i]), bt);
+  for (let i = 0; i < 2; i++) curHill[i] = lerpRgb(curHill[i], hexToRgb(zc.hills[i]), bt);
 
   const ts = slowmo > 0 ? 0.35 : 1; // time scale
   const d = dt * ts;
@@ -421,6 +466,9 @@ function update(dt) {
     return;
   }
 
+  runT += dt;
+  checkZone();
+
   /* --- player movement --- */
   let ax = 0, ay = 0;
   if (keys.ArrowLeft  || keys.KeyA) ax -= 1;
@@ -431,6 +479,12 @@ function update(dt) {
   if (jv) { ax = jv.x * jv.m; ay = jv.y * jv.m; }
   const am = Math.hypot(ax, ay);
   if (am > 1) { ax /= am; ay /= am; }
+
+  // tutorial stage 0: advance once the player has actually steered a bit
+  if (tutStage === 0 && am > 0.05) {
+    moveHeld += dt;
+    if (moveHeld > 0.6) tutStage = 1;
+  }
 
   const ACC = 560, FRIC = 0.90, MAXV = 205;
   player.vx += ax * ACC * d;
@@ -451,6 +505,19 @@ function update(dt) {
     burst(player.x, player.y, PAL.emberHot, 14, 3, 0.4);
     shake = Math.max(shake, 2.5);
     sfx.dash();
+    if (tutStage === 2) { tutStage = 3; store.set("emberdrift_tut", "1"); }
+    // Depth IV rule: the ignited dash repels nearby shades
+    if (zoneIdx >= 3) {
+      for (const s of shades) {
+        const dx = s.x - player.x, dy = s.y - player.y;
+        const m = Math.hypot(dx, dy);
+        if (m < 70 && m > 0.01) {
+          s.kvx += dx / m * 260 * (1 - m / 70);
+          s.kvy += dy / m * 260 * (1 - m / 70);
+        }
+      }
+      burst(player.x, player.y, PAL.danger, 10, 3.5, 0.4);
+    }
   }
   wantDash = false;
 
@@ -498,16 +565,17 @@ function update(dt) {
       burst(wsp.x, wsp.y, "#ffffff", 5, 1.2, 0.3);
       shake = Math.max(shake, 1.5);
       spawnWisp();
-      if (wisps.length < 3 + Math.floor(score / 18)) spawnWisp();
+      if (wisps.length < 3 + Math.floor(score / 25)) spawnWisp();
       addScore(combo);
+      if (tutStage === 1) tutStage = 2;
     }
   }
 
   /* --- power-ups --- */
   puSpawnT -= dt;
-  if (puSpawnT <= 0 && powerups.length < 2 && score >= 8) {
+  if (puSpawnT <= 0 && powerups.length < 2 && runT > 25) {
     spawnPowerup();
-    puSpawnT = rnd(14, 20);
+    puSpawnT = rnd(16, 22);
   }
   for (let i = powerups.length - 1; i >= 0; i--) {
     const pu = powerups[i];
@@ -529,30 +597,31 @@ function update(dt) {
   }
 
   /* --- surge events (waves of pressure) --- */
-  if (score >= 12 && surgeWarn <= 0) {
+  if (runT >= 45 && surgeWarn <= 0) {
     surgeT -= dt;
     if (surgeT <= 0) {
-      surgeWarn = 1.6;
+      surgeWarn = 1.8;
       sfx.warn();
     }
   }
   if (surgeWarn > 0) {
     surgeWarn -= dt;
     if (surgeWarn <= 0) {
-      const n = 5 + zoneIdx;
+      const n = 4 + zoneIdx;
       for (let i = 0; i < n; i++) spawnShade();
       for (let i = 0; i < 2; i++) spawnWisp();
       shake = Math.max(shake, 4);
-      surgeT = rnd(32, 45);
+      // Depth V rule: the choir quickens the surges
+      surgeT = zoneIdx >= 4 ? rnd(25, 35) : rnd(40, 55);
     }
   }
 
-  /* --- shades --- */
+  /* --- shades (difficulty ramps by elapsed time, after a grace period) --- */
   shadeSpawnT -= dt;
-  const targetShades = clamp(3 + Math.floor(score / 9), 3, 14);
+  const targetShades = runT < GRACE ? 0 : clamp(2 + Math.floor((runT - GRACE) / 22), 2, 11);
   if (shadeSpawnT <= 0 && shades.length < targetShades) {
     spawnShade();
-    shadeSpawnT = rnd(0.7, 1.8);
+    shadeSpawnT = rnd(1.2, 2.8);
   }
 
   const fr = frostT > 0 ? 0.3 : 1; // frost slows all shades
@@ -562,36 +631,44 @@ function update(dt) {
     const dx = player.x - s.x, dy = player.y - s.y;
     const m = Math.hypot(dx, dy) || 1;
 
+    // knockback from the ignited dash (decays)
+    s.x += s.kvx * d; s.y += s.kvy * d;
+    s.kvx *= Math.pow(0.88, d * 60); s.kvy *= Math.pow(0.88, d * 60);
+
     if (s.type === "darter") {
-      s.dartCd -= dt * fr;
-      if (s.dartCd <= 0 && m < 170) {
-        s.darting = 0.45;
-        s.dartCd = rnd(1.8, 3);
-        s.dvx = dx / m * 320; s.dvy = dy / m * 320;
-        burst(s.x, s.y, PAL.shade, 8, 2, 0.4);
-      }
-      if (s.darting > 0) {
+      if (s.windup > 0) {
+        // telegraphed lunge: freeze and flash, direction locked at windup start
+        s.windup -= dt * fr;
+        if (s.windup <= 0) s.darting = 0.45;
+      } else if (s.darting > 0) {
         s.darting -= dt;
         s.x += s.dvx * d * fr; s.y += s.dvy * d * fr;
       } else {
+        s.dartCd -= dt * fr;
+        if (s.dartCd <= 0 && m < 160) {
+          s.windup = 0.35;
+          s.dartCd = rnd(2.2, 3.5);
+          s.dvx = dx / m * 300; s.dvy = dy / m * 300;
+          burst(s.x, s.y, PAL.shade, 8, 2, 0.4);
+        }
         s.x += dx / m * s.speed * 35 * d * fr;
         s.y += dy / m * s.speed * 35 * d * fr;
       }
     } else if (s.type === "orbiter") {
       // circles the player, slowly spiraling inward
       s.orbA += dt * 1.7 * s.orbDir * fr;
-      s.orbR = Math.max(28, s.orbR - dt * 5 * fr);
+      s.orbR = Math.max(30, s.orbR - dt * 4.5 * fr);
       const tx = player.x + Math.cos(s.orbA) * s.orbR;
       const ty = player.y + Math.sin(s.orbA) * s.orbR;
       const mm = Math.hypot(tx - s.x, ty - s.y) || 1;
-      const sp = s.speed * 90 * fr;
+      const sp = s.speed * 85 * fr;
       s.x += (tx - s.x) / mm * Math.min(sp * d, mm);
       s.y += (ty - s.y) / mm * Math.min(sp * d, mm);
     } else {
       // seeker / splitter: chase with wobble
-      const chase = s.type === "splitter" ? 55 : 62;
-      s.x += (dx / m * s.speed * chase + Math.cos(s.wob) * 16) * d * fr;
-      s.y += (dy / m * s.speed * chase + Math.sin(s.wob * 1.3) * 16) * d * fr;
+      const chase = s.type === "splitter" ? 45 : 50;
+      s.x += (dx / m * s.speed * chase + Math.cos(s.wob) * 14) * d * fr;
+      s.y += (dy / m * s.speed * chase + Math.sin(s.wob * 1.3) * 14) * d * fr;
     }
 
     // near-miss tension
@@ -649,7 +726,7 @@ function die() {
   burst(player.x, player.y, "#ffffff", 10, 2, 0.5);
   if (score > best) {
     best = score;
-    localStorage.setItem("emberdrift_best", best);
+    store.set("emberdrift_best", best);
   }
 }
 
@@ -670,13 +747,24 @@ function glowCircle(x, y, r, color, alpha = 1) {
 
 function drawText(str, x, y, size, color, align = "center") {
   ctx.fillStyle = color;
-  ctx.font = `bold ${size}px 'Courier New', monospace`;
+  ctx.font = `bold ${size}px 'Courier New', Courier, monospace`;
   ctx.textAlign = align;
   ctx.textBaseline = "middle";
   ctx.fillText(str, Math.round(x), Math.round(y));
 }
 
 function render() {
+  ctx.setTransform(viewScale, 0, 0, viewScale, 0, 0);
+
+  if (isPortrait()) {
+    ctx.fillStyle = "#0b0a14";
+    ctx.fillRect(0, 0, W, H);
+    drawText("↻", W / 2, H / 2 - 24, Math.min(40, W / 5), PAL.ember);
+    drawText("rotate your device", W / 2, H / 2 + 14, Math.min(14, W / 15), PAL.text);
+    drawText("landscape only", W / 2, H / 2 + 34, Math.min(10, W / 15), PAL.textDim);
+    return;
+  }
+
   // camera shake
   ctx.save();
   if (shake > 0) ctx.translate(rnd(-shake, shake) * 0.5, rnd(-shake, shake) * 0.5);
@@ -763,16 +851,20 @@ function render() {
   for (const s of shades) {
     const r = s.r + Math.sin(s.wob * 2) * 1;
     const hot = s.type === "darter";
+    const winding = hot && s.windup > 0;
     const frosted = frostT > 0;
     glowCircle(s.x, s.y, r * 2.6,
       frosted ? "rgba(159,216,255,0.25)" :
+      winding ? "rgba(255,74,106,0.5)" :
       hot ? "rgba(255,74,106,0.3)" : "rgba(177,74,237,0.28)");
-    // jagged blob body
-    ctx.fillStyle = frosted ? "#5b8fb0" : (hot && s.darting > 0 ? PAL.danger : PAL.shade);
+    // jagged blob body — flashes white during a lunge windup so the attack is readable
+    ctx.fillStyle = frosted ? "#5b8fb0" :
+      winding ? (Math.sin(t * 30) > 0 ? "#ffffff" : PAL.danger) :
+      (hot && s.darting > 0 ? PAL.danger : PAL.shade);
     ctx.beginPath();
     for (let i = 0; i < 8; i++) {
       const a = i / 8 * TAU + s.wob * 0.5;
-      const rr = r * (0.75 + 0.3 * Math.sin(i * 3 + s.wob * 2));
+      const rr = r * (0.75 + 0.3 * Math.sin(i * 3 + s.wob * 2)) * (winding ? 1.2 : 1);
       const xx = s.x + Math.cos(a) * rr, yy = s.y + Math.sin(a) * rr;
       i === 0 ? ctx.moveTo(xx, yy) : ctx.lineTo(xx, yy);
     }
@@ -796,7 +888,7 @@ function render() {
   }
 
   // player
-  if (player.alive || state === "play") {
+  {
     // trail
     for (let i = player.trail.length - 1; i >= 0; i--) {
       const tr = player.trail[i];
@@ -845,34 +937,48 @@ function render() {
 
   /* --- UI --- */
   if (state === "play") {
-    drawText(String(score).padStart(4, "0"), W / 2, 18, 18, PAL.text);
+    drawText(String(score).padStart(4, "0"), W / 2, 20, 18, PAL.text);
     if (combo > 1) {
       const pulse = 1 + Math.sin(t * 10) * 0.08;
-      drawText(`x${combo}`, W / 2 + 44, 18, Math.round(11 * pulse), PAL.gold);
+      drawText(`x${combo}`, W / 2 + 46, 20, Math.round(12 * pulse), PAL.gold);
     }
     // depth marker
-    drawText(`DEPTH ${ZONES[zoneIdx].num}`, W - 12, 14, 9, PAL.textDim, "right");
+    drawText(`DEPTH ${ZONES[zoneIdx].num}`, W - 14, 16, 10, PAL.textDim, "right");
     // dash cooldown bar
     const cdw = 50, pct = 1 - player.dashCd / 0.9;
-    px(W / 2 - cdw / 2, 30, cdw, 3, "#2a2440");
-    px(W / 2 - cdw / 2, 30, Math.round(cdw * pct), 3, pct >= 1 ? PAL.wisp : PAL.textDim);
-    if (pct >= 1 && !isTouch) drawText("DASH READY", W / 2, 41, 7, PAL.wispDim);
+    px(W / 2 - cdw / 2, 32, cdw, 3, "#2a2440");
+    px(W / 2 - cdw / 2, 32, Math.round(cdw * pct), 3, pct >= 1 ? PAL.wisp : PAL.textDim);
 
     // frost timer
-    if (frostT > 0) drawText(`❄ ${frostT.toFixed(1)}`, 12, 14, 9, PAL.frost, "left");
+    if (frostT > 0) drawText(`FROST ${frostT.toFixed(1)}`, 14, 16, 10, PAL.frost, "left");
 
     // surge warning
     if (surgeWarn > 0 && Math.sin(t * 14) > -0.2) {
-      drawText("⚠ SURGE INCOMING ⚠", W / 2, 56, 13, PAL.danger);
+      drawText("! SURGE INCOMING !", W / 2, 58, 14, PAL.danger);
     }
 
-    // zone banner
+    // zone banner: name + the rule that just changed
     if (zoneBanner > 0) {
-      const a = clamp(zoneBanner > 2.5 ? (3 - zoneBanner) * 2 : zoneBanner / 2.5, 0, 1);
+      const a = clamp(zoneBanner > 3 ? (3.5 - zoneBanner) * 2 : zoneBanner / 3, 0, 1);
       ctx.globalAlpha = a;
-      drawText(`— DEPTH ${ZONES[zoneIdx].num} —`, W / 2, H / 2 - 34, 12, PAL.textDim);
-      drawText(ZONES[zoneIdx].name, W / 2, H / 2 - 16, 20, PAL.text);
+      drawText(`— DEPTH ${ZONES[zoneIdx].num} —`, W / 2, H / 2 - 46, 12, PAL.textDim);
+      drawText(ZONES[zoneIdx].name, W / 2, H / 2 - 26, 20, PAL.text);
+      drawText(ZONES[zoneIdx].rule, W / 2, H / 2 - 6, 11, PAL.gold);
       ctx.globalAlpha = 1;
+    }
+
+    // first-run contextual tutorial (one short prompt per mechanic)
+    if (tutStage < 3 && titleA < 0.5 && Math.sin(t * 3) > -0.6) {
+      const msgs = isTouch ? [
+        "touch and drag anywhere to steer",
+        "collect the glowing wisps",
+        "tap DASH — it destroys shades"
+      ] : [
+        "WASD or arrows to steer",
+        "collect the glowing wisps",
+        "press SPACE to dash — it destroys shades"
+      ];
+      drawText(msgs[tutStage], W / 2, H - 30, 12, PAL.text);
     }
 
     /* touch UI */
@@ -889,58 +995,69 @@ function render() {
         const kx = m > JOY_R ? joy.bx + dx / m * JOY_R : joy.kx;
         const ky = m > JOY_R ? joy.by + dy / m * JOY_R : joy.ky;
         ctx.fillStyle = PAL.ember;
-        ctx.beginPath(); ctx.arc(kx, ky, 9, 0, TAU); ctx.fill();
+        ctx.beginPath(); ctx.arc(kx, ky, 10, 0, TAU); ctx.fill();
         ctx.globalAlpha = 1;
       }
-      // dash button with cooldown sweep
+      // dash button with cooldown sweep (bottom-right, clear of the HUD)
+      const db = dashBtnPos();
       const pct2 = 1 - player.dashCd / 0.9;
       ctx.globalAlpha = 0.35;
       ctx.fillStyle = "#1a1730";
-      ctx.beginPath(); ctx.arc(dashBtn.x, dashBtn.y, dashBtn.r, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(db.x, db.y, DASH_R, 0, TAU); ctx.fill();
       ctx.globalAlpha = pct2 >= 1 ? 0.85 : 0.4;
       ctx.strokeStyle = pct2 >= 1 ? PAL.wisp : PAL.textDim;
-      ctx.lineWidth = 2.5;
+      ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.arc(dashBtn.x, dashBtn.y, dashBtn.r - 2, -Math.PI / 2, -Math.PI / 2 + TAU * pct2);
+      ctx.arc(db.x, db.y, DASH_R - 3, -Math.PI / 2, -Math.PI / 2 + TAU * pct2);
       ctx.stroke();
       ctx.globalAlpha = pct2 >= 1 ? 0.95 : 0.5;
-      drawText("DASH", dashBtn.x, dashBtn.y, 8, pct2 >= 1 ? PAL.wisp : PAL.textDim);
+      drawText("DASH", db.x, db.y, 10, pct2 >= 1 ? PAL.wisp : PAL.textDim);
       ctx.globalAlpha = 1;
     }
   }
 
-  if (state === "title") {
+  // title as a fading overlay — never a gate, the game is already running
+  if (titleA > 0) {
+    ctx.globalAlpha = titleA * 0.92;
     const bob = Math.sin(t * 2) * 3;
-    ctx.globalAlpha = 0.92;
-    drawText("E M B E R", W / 2, 86 + bob, 38, PAL.ember);
-    drawText("D R I F T", W / 2, 122 + bob, 38, PAL.emberHot);
-    ctx.globalAlpha = 1;
-    glowCircle(W / 2, 104 + bob, 110, "rgba(255,140,50,0.07)");
-    drawText("collect the wisps  ·  dodge the shades", W / 2, 168, 10, PAL.textDim);
-    drawText("dash through shades  ·  descend the depths", W / 2, 182, 10, PAL.textDim);
-    if (Math.sin(t * 4) > -0.3) drawText("— press any key or tap to begin —", W / 2, 215, 11, PAL.text);
-    if (isTouch) {
-      drawText("touch & drag to steer   ·   DASH button or 2nd finger", W / 2, 248, 9, PAL.textDim);
-    } else {
-      drawText("WASD / arrows to move   ·   SPACE to dash", W / 2, 248, 9, PAL.textDim);
+    glowCircle(W / 2, 90 + bob, 110, "rgba(255,140,50,0.07)");
+    drawText("E M B E R   D R I F T", W / 2, 78 + bob, 30, PAL.ember);
+    if (Math.sin(t * 4) > -0.3) {
+      drawText(isTouch || 'ontouchstart' in window ? "touch and drag to play" : "WASD / arrows to play", W / 2, 112 + bob, 12, PAL.text);
     }
-    if (best > 0) drawText(`best ${best}`, W / 2, 268, 9, PAL.gold);
+    if (best > 0) drawText(`best ${best}`, W / 2, 134 + bob, 10, PAL.gold);
+    ctx.globalAlpha = 1;
   }
 
   if (state === "over") {
     ctx.fillStyle = "rgba(8,6,16,0.55)";
     ctx.fillRect(0, 0, W, H);
-    drawText("THE EMBER FADES", W / 2, 96, 22, PAL.danger);
-    drawText(`score  ${score}`, W / 2, 132, 14, PAL.text);
-    drawText(`reached depth ${ZONES[zoneIdx].num} · ${ZONES[zoneIdx].name}`, W / 2, 152, 9, PAL.textDim);
+    drawText("THE EMBER FADES", W / 2, 82, 22, PAL.danger);
+    drawText(`score  ${score}`, W / 2, 116, 15, PAL.text);
+    drawText(`survived ${Math.floor(runT)}s in depth ${ZONES[zoneIdx].num} · ${ZONES[zoneIdx].name}`, W / 2, 138, 10, PAL.textDim);
+
+    // near-miss hook: show how close the next depth was
+    if (zoneIdx < ZONES.length - 1) {
+      const cur = ZONES[zoneIdx], next = ZONES[zoneIdx + 1];
+      const span = next.at - cur.at;
+      const prog = clamp((depthClock() - cur.at) / span, 0, 1);
+      const away = Math.max(1, Math.ceil(next.at - depthClock()));
+      drawText(`DEPTH ${next.num} · ${next.name} was ~${away}s away`, W / 2, 162, 11, PAL.gold);
+      const bw = 160;
+      px(W / 2 - bw / 2, 174, bw, 4, "#2a2440");
+      px(W / 2 - bw / 2, 174, Math.round(bw * prog), 4, PAL.gold);
+    } else {
+      drawText("you reached the final depth", W / 2, 162, 11, PAL.gold);
+    }
+
     if (score >= best && score > 0) {
       const pulse = 1 + Math.sin(t * 8) * 0.1;
-      drawText("★ NEW BEST ★", W / 2, 172, Math.round(12 * pulse), PAL.gold);
-    } else {
-      drawText(`best  ${best}`, W / 2, 172, 11, PAL.textDim);
+      drawText("* NEW BEST *", W / 2, 196, Math.round(13 * pulse), PAL.gold);
+    } else if (best > 0) {
+      drawText(`best  ${best}`, W / 2, 196, 11, PAL.textDim);
     }
     if (overTimer > 0.8 && Math.sin(t * 4) > -0.3) {
-      drawText("— press any key or tap to rekindle —", W / 2, 208, 11, PAL.text);
+      drawText(isTouch ? "— tap to rekindle —" : "— press any key to rekindle —", W / 2, 226, 12, PAL.text);
     }
   }
 
@@ -952,11 +1069,14 @@ function render() {
 }
 
 /* ---------- main loop ---------- */
+fitCanvas();
+reset();
+
 let last = performance.now();
 function loop(now) {
   const dt = Math.min((now - last) / 1000, 0.05);
   last = now;
-  update(dt);
+  if (!isPortrait()) update(dt);
   render();
   requestAnimationFrame(loop);
 }
