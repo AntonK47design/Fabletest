@@ -777,6 +777,13 @@ function update(dt) {
     }
   }
 
+  /* Two-stage count curve: the familiar early ramp to 11, then a slower
+     second climb so a long run never flattens out. */
+  const et = Math.max(0, runT - GRACE);
+  const targetShades = runT < GRACE ? 0
+    : (et <= 63 ? 4 + Math.floor(et / 9)
+                : Math.min(11 + Math.floor((et - 63) / 17), 16));
+
   /* --- surge events (waves of pressure) --- */
   if (runT >= 40 && surgeWarn <= 0) {
     surgeT -= dt;
@@ -788,23 +795,25 @@ function update(dt) {
   if (surgeWarn > 0) {
     surgeWarn -= dt;
     if (surgeWarn <= 0) {
+      /* Surges deliberately spawn past the steady-state target, but with the
+         tighter late-game rhythm they could stack indefinitely for a player who
+         never dashes. Bound the worst case so the field stays clearable. */
+      const hardCap = Math.min(targetShades + 8, 24);
       const n = 4 + zoneIdx;
-      for (let i = 0; i < n; i++) spawnShade();
+      for (let i = 0; i < n && shades.length < hardCap; i++) spawnShade();
       for (let i = 0; i < 2; i++) spawnWisp();
       shake = Math.max(shake, 4);
-      // Depth V rule: the choir quickens the surges
-      surgeT = zoneIdx >= 4 ? rnd(25, 35) : rnd(38, 50);
+      /* Wave pressure tightens across the whole run instead of only at the
+         last depth, so the rhythm escalates alongside speed and numbers.
+         The Void Choir still gets an extra squeeze on top. */
+      let base = lerp(45, 22, Math.min(runT / 170, 1));
+      if (zoneIdx >= 4) base *= 0.8;
+      surgeT = rnd(base * 0.85, base * 1.15);
     }
   }
 
   /* --- shades (difficulty ramps by elapsed time, after a grace period) --- */
   shadeSpawnT -= dt;
-  /* Two-stage count curve: the familiar early ramp to 11, then a slower
-     second climb so a long run never flattens out. */
-  const et = Math.max(0, runT - GRACE);
-  const targetShades = runT < GRACE ? 0
-    : (et <= 63 ? 4 + Math.floor(et / 9)
-                : Math.min(11 + Math.floor((et - 63) / 17), 16));
   if (shadeSpawnT <= 0 && shades.length < targetShades) {
     spawnShade();
     // replacements arrive faster the longer you last, so clearing the field
@@ -837,9 +846,10 @@ function update(dt) {
       } else {
         s.dartCd -= dt * fr;
         if (s.dartCd <= 0 && m < 160) {
-          s.windup = 0.35;
+          s.windup = 0.35;          // telegraph stays fixed: that is the fair warning
           s.dartCd = rnd(2.2, 3.5);
-          s.dvx = dx / m * 320; s.dvy = dy / m * 320;
+          const lunge = 320 * (1 + timeSpeedBonus() * 0.45);
+          s.dvx = dx / m * lunge; s.dvy = dy / m * lunge;
           burst(s.x, s.y, PAL.shade, 8, 2, 0.4);
         }
         s.x += dx / m * spd * 35 * d * fr;
@@ -857,8 +867,8 @@ function update(dt) {
         if (s.darting <= 0) s.orbR = rnd(70, 100); // retreat to a wide orbit
       } else {
         // circle the player, spiraling inward
-        s.orbA += dt * 1.7 * s.orbDir * fr;
-        s.orbR = Math.max(30, s.orbR - dt * 9 * fr);
+        s.orbA += dt * (1.7 + timeSpeedBonus() * 0.5) * s.orbDir * fr;
+        s.orbR = Math.max(30, s.orbR - dt * (9 + timeSpeedBonus() * 5) * fr);
         const tx = player.x + Math.cos(s.orbA) * s.orbR;
         const ty = player.y + Math.sin(s.orbA) * s.orbR;
         const mm = Math.hypot(tx - s.x, ty - s.y) || 1;
@@ -867,8 +877,9 @@ function update(dt) {
         s.y += (ty - s.y) / mm * Math.min(sp * d, mm);
         // once the orbit is tight, strike
         if (s.orbR <= 30.5 && m < 130) {
-          s.windup = 0.4;
-          s.dvx = dx / m * 280; s.dvy = dy / m * 280;
+          s.windup = 0.4;           // telegraph stays fixed
+          const strike = 280 * (1 + timeSpeedBonus() * 0.45);
+          s.dvx = dx / m * strike; s.dvy = dy / m * strike;
           burst(s.x, s.y, PAL.shade, 8, 2, 0.4);
         }
       }
