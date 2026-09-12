@@ -11,8 +11,11 @@
     background: #0b0a14;
     overflow: hidden;
     font-family: 'Courier New', Courier, monospace;
-    user-select: none;
     -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
     touch-action: none;
   }
   #game { position: fixed; inset: 0; display: block; }
@@ -205,14 +208,16 @@ window.emberDriftSetMute = v => { sdkMuted = !!v; };
 function audio() {
   try {
     if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
-    if (AC.state === "suspended") AC.resume();
+    if (AC.state === "suspended" || AC.state === "interrupted") AC.resume();
   } catch (e) {}
   return AC;
 }
-for (const ev of ["pointerdown", "touchstart", "mousedown", "keydown", "click"]) {
+for (const ev of ["pointerdown", "touchstart", "touchend", "mousedown", "keydown", "click"]) {
   window.addEventListener(ev, audio, { capture: true, passive: true });
 }
-// a backgrounded tab/iframe suspends the context; resume when it returns
+// iOS drops the context to "interrupted" when backgrounded or on a phone call.
+// visibilitychange alone cannot revive it — WebKit needs a real gesture — so the
+// listeners above (touchend especially) are the actual recovery path.
 document.addEventListener("visibilitychange", () => { if (!document.hidden) audio(); });
 window.addEventListener("focus", audio);
 
@@ -345,6 +350,7 @@ let titleA = 1;               // title-as-overlay alpha, first page view only
 let firstRun = store.get("emberdrift_tut", "0") !== "1";
 let tutStage = firstRun ? 0 : 3;  // 0 steer, 1 collect, 2 dash, 3 done
 let moveHeld = 0;
+let emberAcc = 0, trailAcc = 0, nearSfxT = 0;   // rate limiters, see below
 
 let zoneIdx = 0, zoneBanner = 0;   // banner countdown for zone announcements
 let frostT = 0;                    // frost power-up: shades slowed
@@ -620,11 +626,19 @@ function update(dt) {
   if (player.y > H - pad) { player.y = H - pad; player.vy *= -0.5; }
 
   if (v > 5) player.angle = Math.atan2(player.vy, player.vx);
-  player.trail.unshift({ x: player.x, y: player.y, dash: player.dashT > 0 });
-  if (player.trail.length > 16) player.trail.pop();
 
-  // ember exhaust particles
-  if (Math.random() < 0.6) {
+  /* Trail and exhaust are sampled on a fixed clock rather than once per frame,
+     so a 144Hz display gets the same trail length and particle density as 60Hz. */
+  trailAcc += dt;
+  while (trailAcc >= 1 / 60) {
+    trailAcc -= 1 / 60;
+    player.trail.unshift({ x: player.x, y: player.y, dash: player.dashT > 0 });
+    if (player.trail.length > 16) player.trail.pop();
+  }
+
+  emberAcc += dt;
+  while (emberAcc >= 1 / 36) {          // ~36 motes/sec, matching the old 60Hz rate
+    emberAcc -= 1 / 36;
     parts.push({
       x: player.x + rnd(-2, 2), y: player.y + rnd(-2, 2),
       vx: -player.vx * 0.004 + rnd(-0.3, 0.3), vy: -player.vy * 0.004 + rnd(-0.5, -0.1),
@@ -814,7 +828,8 @@ function update(dt) {
       break;
     }
   }
-  if (nearDanger && Math.random() < 0.08) sfx.near();
+  nearSfxT -= dt;
+  if (nearDanger && nearSfxT <= 0) { sfx.near(); nearSfxT = rnd(0.15, 0.3); }
 }
 
 function die() {
