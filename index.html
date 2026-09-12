@@ -51,9 +51,9 @@
    You are a drifting ember. Collect wisps. Dodge the shades.
    Descend through the Depths. Survive the surges.
 
-   Rendering: the world is drawn into a low-res pixel buffer and
-   upscaled with nearest-neighbor for the chunky indie look; HUD
-   text is drawn on top at native resolution so it stays legible.
+   Rendering: everything — world, HUD and menus — is drawn into one
+   low-res buffer with Courier New, then upscaled with nearest-neighbor.
+   That upscale is what gives the text its chunky pixel character.
    ============================================================ */
 
 const canvas = document.getElementById("game");
@@ -776,124 +776,33 @@ function glowCircle(x, y, r, color, alpha = 1) {
   g.globalAlpha = 1;
 }
 
-/* ---------- bitmap font: 5x7 glyphs drawn as rects ----------
-   Keeps the pixel-art look on every string while staying perfectly
-   crisp at any resolution or devicePixelRatio (no font smoothing). */
-const FONT_W = 5, FONT_H = 7;
-const FONT_SRC = {
-  "A": ".###./#...#/#...#/#####/#...#/#...#/#...#",
-  "B": "####./#...#/#...#/####./#...#/#...#/####.",
-  "C": ".###./#...#/#..../#..../#..../#...#/.###.",
-  "D": "####./#...#/#...#/#...#/#...#/#...#/####.",
-  "E": "#####/#..../#..../####./#..../#..../#####",
-  "F": "#####/#..../#..../####./#..../#..../#....",
-  "G": ".###./#...#/#..../#.###/#...#/#...#/.###.",
-  "H": "#...#/#...#/#...#/#####/#...#/#...#/#...#",
-  "I": "#####/..#../..#../..#../..#../..#../#####",
-  "J": "..###/...#./...#./...#./...#./#..#./.##..",
-  "K": "#...#/#..#./#.#../##.../#.#../#..#./#...#",
-  "L": "#..../#..../#..../#..../#..../#..../#####",
-  "M": "#...#/##.##/#.#.#/#...#/#...#/#...#/#...#",
-  "N": "#...#/##..#/#.#.#/#..##/#...#/#...#/#...#",
-  "O": ".###./#...#/#...#/#...#/#...#/#...#/.###.",
-  "P": "####./#...#/#...#/####./#..../#..../#....",
-  "Q": ".###./#...#/#...#/#...#/#.#.#/#..#./.##.#",
-  "R": "####./#...#/#...#/####./#.#../#..#./#...#",
-  "S": ".####/#..../#..../.###./....#/....#/####.",
-  "T": "#####/..#../..#../..#../..#../..#../..#..",
-  "U": "#...#/#...#/#...#/#...#/#...#/#...#/.###.",
-  "V": "#...#/#...#/#...#/#...#/#...#/.#.#./..#..",
-  "W": "#...#/#...#/#...#/#...#/#.#.#/##.##/#...#",
-  "X": "#...#/#...#/.#.#./..#../.#.#./#...#/#...#",
-  "Y": "#...#/#...#/.#.#./..#../..#../..#../..#..",
-  "Z": "#####/....#/...#./..#../.#.../#..../#####",
-  "0": ".###./#...#/#..##/#.#.#/##..#/#...#/.###.",
-  "1": "..#../.##../..#../..#../..#../..#../.###.",
-  "2": ".###./#...#/....#/...#./..#../.#.../#####",
-  "3": "####./....#/....#/.###./....#/....#/####.",
-  "4": "...#./..##./.#.#./#..#./#####/...#./...#.",
-  "5": "#####/#..../####./....#/....#/#...#/.###.",
-  "6": ".###./#...#/#..../####./#...#/#...#/.###.",
-  "7": "#####/....#/...#./..#../.#.../.#.../.#...",
-  "8": ".###./#...#/#...#/.###./#...#/#...#/.###.",
-  "9": ".###./#...#/#...#/.####/....#/#...#/.###.",
-  " ": "...../...../...../...../...../...../.....",
-  ".": "...../...../...../...../...../..##./..##.",
-  ",": "...../...../...../...../..##./..##./.#...",
-  "!": "..#../..#../..#../..#../..#../...../..#..",
-  "?": ".###./#...#/....#/...#./..#../...../..#..",
-  "-": "...../...../...../#####/...../...../.....",
-  "·": "...../...../...../..#../...../...../.....",
-  "*": "...../..#../#.#.#/.###./#.#.#/..#../.....",
-  "(": "...#./..#../.#.../.#.../.#.../..#../...#.",
-  ")": ".#.../..#../...#./...#./...#./..#../.#...",
-  ":": "...../..##./..##./...../..##./..##./.....",
-  "~": "...../...../.#.../#.#.#/...#./...../.....",
-  "/": "....#/....#/...#./..#../.#.../#..../#....",
-  "+": "...../..#../..#../#####/..#../..#../.....",
-  "'": "..#../..#../...../...../...../...../....."
-};
-const FONT = {};
-for (const k in FONT_SRC) FONT[k] = FONT_SRC[k].split("/");
-// characters that share a glyph
-const FONT_ALIAS = { "—": "-", "–": "-", "•": "·", "★": "*", "″": "'", "’": "'" };
-function glyphFor(ch) {
-  if (FONT_ALIAS[ch]) ch = FONT_ALIAS[ch];
-  return FONT[ch] || FONT["?"];
-}
-
-// size = glyph block height in logical units; y = vertical centre
-function pixText(str, x, y, size, color, align = "center") {
-  str = String(str).toUpperCase();
-  let ps = Math.max(1, Math.round(size / FONT_H * viewScale));
-  const maxW = canvas.width - 8 * viewScale;
-  const widthAt = p => str.length * (FONT_W + 1) * p - p;
-  while (ps > 1 && widthAt(ps) > maxW) ps--;
-
-  const w = widthAt(ps), h = FONT_H * ps;
-  let dx = Math.round(x * viewScale);
-  if (align === "center") dx -= Math.round(w / 2);
-  else if (align === "right") dx -= w;
-  const dy = Math.round(y * viewScale - h / 2);
-
-  ctx.save();
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = color;
-  for (let i = 0; i < str.length; i++) {
-    const gl = glyphFor(str[i]);
-    const gx = dx + i * (FONT_W + 1) * ps;
-    for (let r = 0; r < FONT_H; r++) {
-      const row = gl[r];
-      let c = 0;
-      while (c < FONT_W) {
-        if (row[c] === "#") {
-          let run = 1;
-          while (c + run < FONT_W && row[c + run] === "#") run++;
-          ctx.fillRect(gx + c * ps, dy + r * ps, run * ps, ps);
-          c += run;
-        } else c++;
-      }
-    }
-  }
-  ctx.restore();
+function drawText(str, x, y, size, color, align = "center") {
+  g.fillStyle = color;
+  g.font = `bold ${size}px 'Courier New', Courier, monospace`;
+  g.textAlign = align;
+  g.textBaseline = "middle";
+  g.fillText(str, Math.round(x), Math.round(y));
 }
 
 /* ---------- render ---------- */
 function render() {
   if (isPortrait()) {
-    g = ctx;
-    ctx.setTransform(viewScale, 0, 0, viewScale, 0, 0);
-    ctx.fillStyle = "#0b0a14";
-    ctx.fillRect(0, 0, W, H);
+    g = wctx;
+    wctx.setTransform(1, 0, 0, 1, 0, 0);
+    wctx.fillStyle = "#0b0a14";
+    wctx.fillRect(0, 0, W, H);
     // rotate pictogram: a portrait frame turning into a landscape one
-    ctx.strokeStyle = PAL.ember;
-    ctx.lineWidth = 2;
-    ctx.strokeRect(W / 2 - 9, H / 2 - 58, 18, 28);
-    ctx.globalAlpha = 0.45;
-    ctx.strokeRect(W / 2 - 14, H / 2 - 52, 28, 18);
-    ctx.globalAlpha = 1;
-    pixText("ROTATE YOUR DEVICE", W / 2, H / 2 + 6, 12, PAL.text);
-    pixText("LANDSCAPE ONLY", W / 2, H / 2 + 26, 9, PAL.textDim);
+    wctx.strokeStyle = PAL.ember;
+    wctx.lineWidth = 2;
+    wctx.strokeRect(W / 2 - 9, H / 2 - 58, 18, 28);
+    wctx.globalAlpha = 0.45;
+    wctx.strokeRect(W / 2 - 14, H / 2 - 52, 28, 18);
+    wctx.globalAlpha = 1;
+    drawText("rotate your device", W / 2, H / 2 + 6, 12, PAL.text);
+    drawText("ember drift is played in landscape", W / 2, H / 2 + 26, 9, PAL.textDim);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(world, 0, 0, canvas.width, canvas.height);
     return;
   }
 
@@ -1069,43 +978,39 @@ function render() {
 
   wctx.restore();
 
-  /* ===== blit: nearest-neighbor upscale for the chunky pixel look ===== */
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(world, 0, 0, canvas.width, canvas.height);
+  /* ===== UI layer: drawn into the SAME low-res buffer as the world, so
+     the Courier glyphs get upscaled into chunky pixels along with it.
+     This is the original pipeline and what gives the game its look. ===== */
+  g = wctx;
 
-  /* ===== UI layer: native resolution so text stays legible ===== */
-  ctx.setTransform(viewScale, 0, 0, viewScale, 0, 0);
-  g = ctx;
-
-  if (state === "play") {
-    pixText(String(score).padStart(4, "0"), W / 2, 20, 18, PAL.text);
+  if (state === "play" && titleA < 0.6) {
+    drawText(String(score).padStart(4, "0"), W / 2, 20, 18, PAL.text);
     if (combo > 1) {
       const pulse = 1 + Math.sin(t * 10) * 0.08;
-      pixText(`x${combo}`, W / 2 + 46, 20, Math.round(12 * pulse), PAL.gold);
+      drawText(`x${combo}`, W / 2 + 46, 20, Math.round(12 * pulse), PAL.gold);
     }
     // depth marker
-    pixText(`DEPTH ${ZONES[zoneIdx].num}`, W - 14, 16, 10, PAL.textDim, "right");
+    drawText(`DEPTH ${ZONES[zoneIdx].num}`, W - 14, 16, 10, PAL.textDim, "right");
     // dash cooldown bar
     const cdw = 50, pct = 1 - player.dashCd / 0.9;
     px(W / 2 - cdw / 2, 32, cdw, 3, "#2a2440");
     px(W / 2 - cdw / 2, 32, Math.round(cdw * pct), 3, pct >= 1 ? PAL.wisp : PAL.textDim);
 
     // frost timer
-    if (frostT > 0) pixText(`FROST ${frostT.toFixed(1)}`, 14, 16, 10, PAL.frost, "left");
+    if (frostT > 0) drawText(`frost ${frostT.toFixed(1)}`, 14, 16, 10, PAL.frost, "left");
 
     // surge warning
     if (surgeWarn > 0 && Math.sin(t * 14) > -0.2) {
-      pixText("! SURGE INCOMING !", W / 2, 58, 14, PAL.danger);
+      drawText("!  S U R G E   I N C O M I N G  !", W / 2, 58, 14, PAL.danger);
     }
 
     // zone banner: name + the rule that just changed
     if (zoneBanner > 0) {
       const a = clamp(zoneBanner > 3 ? (3.5 - zoneBanner) * 2 : zoneBanner / 3, 0, 1);
       ctx.globalAlpha = a;
-      pixText(`— DEPTH ${ZONES[zoneIdx].num} —`, W / 2, H / 2 - 46, 12, PAL.textDim);
-      pixText(ZONES[zoneIdx].name, W / 2, H / 2 - 26, 20, PAL.text);
-      pixText(ZONES[zoneIdx].rule, W / 2, H / 2 - 6, 11, PAL.gold);
+      drawText(`— DEPTH ${ZONES[zoneIdx].num} —`, W / 2, H / 2 - 46, 12, PAL.textDim);
+      drawText(ZONES[zoneIdx].name, W / 2, H / 2 - 26, 20, PAL.text);
+      drawText(ZONES[zoneIdx].rule, W / 2, H / 2 - 6, 11, PAL.gold);
       ctx.globalAlpha = 1;
     }
 
@@ -1120,7 +1025,7 @@ function render() {
         "collect the glowing wisps",
         "press SPACE to dash — it destroys shades"
       ];
-      pixText(msgs[tutStage], W / 2, H - 30, 12, PAL.text);
+      drawText(msgs[tutStage], W / 2, H - 30, 12, PAL.text);
     }
 
     /* touch UI */
@@ -1153,30 +1058,37 @@ function render() {
       ctx.arc(db.x, db.y, DASH_R - 3, -Math.PI / 2, -Math.PI / 2 + TAU * pct2);
       ctx.stroke();
       ctx.globalAlpha = pct2 >= 1 ? 0.95 : 0.5;
-      pixText("DASH", db.x, db.y, 10, pct2 >= 1 ? PAL.wisp : PAL.textDim);
+      drawText("DASH", db.x, db.y, 10, pct2 >= 1 ? PAL.wisp : PAL.textDim);
       ctx.globalAlpha = 1;
     }
   }
 
-  // title as a fading overlay — never a gate, the game is already running
+  // the original title, now a fading overlay rather than a gate —
+  // the game is already running behind it and it clears on first input
   if (titleA > 0) {
-    ctx.globalAlpha = titleA * 0.92;
     const bob = Math.sin(t * 2) * 3;
-    glowCircle(W / 2, 90 + bob, 110, "rgba(255,140,50,0.07)");
-    pixText("EMBER DRIFT", W / 2, 78 + bob, 30, PAL.ember);
+    glowCircle(W / 2, 104 + bob, 110, "rgba(255,140,50,0.07)");
+    wctx.globalAlpha = titleA * 0.92;
+    drawText("E M B E R", W / 2, 86 + bob, 38, PAL.ember);
+    drawText("D R I F T", W / 2, 122 + bob, 38, PAL.emberHot);
+    wctx.globalAlpha = titleA;
+    drawText("collect the wisps  ·  dodge the shades", W / 2, 168, 10, PAL.textDim);
+    drawText("dash through shades to destroy them", W / 2, 182, 10, PAL.textDim);
     if (Math.sin(t * 4) > -0.3) {
-      pixText(isTouch || 'ontouchstart' in window ? "TOUCH AND DRAG TO PLAY" : "WASD / ARROWS TO PLAY", W / 2, 110 + bob, 11, PAL.text);
+      drawText(isTouch ? "— touch and drag to begin —" : "— press any key to begin —", W / 2, 215, 11, PAL.text);
     }
-    if (best > 0) pixText(`BEST ${best}`, W / 2, 132 + bob, 9, PAL.gold);
-    ctx.globalAlpha = 1;
+    drawText(isTouch ? "drag to move   ·   DASH button to dash"
+                     : "WASD / arrows to move   ·   SPACE to dash", W / 2, 248, 9, PAL.textDim);
+    if (best > 0) drawText(`best ${best}`, W / 2, 268, 9, PAL.gold);
+    wctx.globalAlpha = 1;
   }
 
   if (state === "over") {
     ctx.fillStyle = "rgba(8,6,16,0.55)";
     ctx.fillRect(0, 0, W, H);
-    pixText("THE EMBER FADES", W / 2, 82, 22, PAL.danger);
-    pixText(`score  ${score}`, W / 2, 116, 15, PAL.text);
-    pixText(`survived ${Math.floor(runT)}s in depth ${ZONES[zoneIdx].num} · ${ZONES[zoneIdx].name}`, W / 2, 138, 10, PAL.textDim);
+    drawText("THE EMBER FADES", W / 2, 82, 22, PAL.danger);
+    drawText(`score  ${score}`, W / 2, 116, 15, PAL.text);
+    drawText(`survived ${Math.floor(runT)}s in depth ${ZONES[zoneIdx].num} · ${ZONES[zoneIdx].name}`, W / 2, 138, 10, PAL.textDim);
 
     // near-miss hook: show how close the next depth was
     if (zoneIdx < ZONES.length - 1) {
@@ -1184,30 +1096,36 @@ function render() {
       const span = next.at - cur.at;
       const prog = clamp((depthClock() - cur.at) / span, 0, 1);
       const away = Math.max(1, Math.ceil(next.at - depthClock()));
-      pixText(`DEPTH ${next.num} · ${next.name} was ~${away}s away`, W / 2, 162, 11, PAL.gold);
+      drawText(`DEPTH ${next.num} · ${next.name} was ~${away}s away`, W / 2, 162, 11, PAL.gold);
       const bw = 160;
       px(W / 2 - bw / 2, 174, bw, 4, "#2a2440");
       px(W / 2 - bw / 2, 174, Math.round(bw * prog), 4, PAL.gold);
     } else {
-      pixText("you reached the final depth", W / 2, 162, 11, PAL.gold);
+      drawText("you reached the final depth", W / 2, 162, 11, PAL.gold);
     }
 
     if (score >= best && score > 0) {
       const pulse = 1 + Math.sin(t * 8) * 0.1;
-      pixText("* NEW BEST *", W / 2, 196, Math.round(13 * pulse), PAL.gold);
+      drawText("★ NEW BEST ★", W / 2, 196, Math.round(13 * pulse), PAL.gold);
     } else if (best > 0) {
-      pixText(`best  ${best}`, W / 2, 196, 11, PAL.textDim);
+      drawText(`best  ${best}`, W / 2, 196, 11, PAL.textDim);
     }
     if (overTimer > 0.8 && Math.sin(t * 4) > -0.3) {
-      pixText(isTouch ? "— tap to rekindle —" : "— press any key to rekindle —", W / 2, 226, 12, PAL.text);
+      drawText(isTouch ? "— tap to rekindle —" : "— press any key to rekindle —", W / 2, 226, 12, PAL.text);
     }
   }
 
   // hit flash
   if (flash > 0) {
-    ctx.fillStyle = `rgba(255,240,220,${flash * 0.35})`;
-    ctx.fillRect(0, 0, W, H);
+    wctx.fillStyle = `rgba(255,240,220,${flash * 0.35})`;
+    wctx.fillRect(0, 0, W, H);
   }
+
+  /* ===== blit: nearest-neighbor upscale of world + UI together ===== */
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.webkitImageSmoothingEnabled = false;
+  ctx.drawImage(world, 0, 0, canvas.width, canvas.height);
 }
 
 /* ---------- main loop ---------- */
