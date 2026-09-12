@@ -776,12 +776,106 @@ function glowCircle(x, y, r, color, alpha = 1) {
   g.globalAlpha = 1;
 }
 
-function drawText(str, x, y, size, color, align = "center") {
-  g.fillStyle = color;
-  g.font = `bold ${size}px 'Courier New', Courier, monospace`;
-  g.textAlign = align;
-  g.textBaseline = "middle";
-  g.fillText(str, Math.round(x), Math.round(y));
+/* ---------- bitmap font: 5x7 glyphs drawn as rects ----------
+   Keeps the pixel-art look on every string while staying perfectly
+   crisp at any resolution or devicePixelRatio (no font smoothing). */
+const FONT_W = 5, FONT_H = 7;
+const FONT_SRC = {
+  "A": ".###./#...#/#...#/#####/#...#/#...#/#...#",
+  "B": "####./#...#/#...#/####./#...#/#...#/####.",
+  "C": ".###./#...#/#..../#..../#..../#...#/.###.",
+  "D": "####./#...#/#...#/#...#/#...#/#...#/####.",
+  "E": "#####/#..../#..../####./#..../#..../#####",
+  "F": "#####/#..../#..../####./#..../#..../#....",
+  "G": ".###./#...#/#..../#.###/#...#/#...#/.###.",
+  "H": "#...#/#...#/#...#/#####/#...#/#...#/#...#",
+  "I": "#####/..#../..#../..#../..#../..#../#####",
+  "J": "..###/...#./...#./...#./...#./#..#./.##..",
+  "K": "#...#/#..#./#.#../##.../#.#../#..#./#...#",
+  "L": "#..../#..../#..../#..../#..../#..../#####",
+  "M": "#...#/##.##/#.#.#/#...#/#...#/#...#/#...#",
+  "N": "#...#/##..#/#.#.#/#..##/#...#/#...#/#...#",
+  "O": ".###./#...#/#...#/#...#/#...#/#...#/.###.",
+  "P": "####./#...#/#...#/####./#..../#..../#....",
+  "Q": ".###./#...#/#...#/#...#/#.#.#/#..#./.##.#",
+  "R": "####./#...#/#...#/####./#.#../#..#./#...#",
+  "S": ".####/#..../#..../.###./....#/....#/####.",
+  "T": "#####/..#../..#../..#../..#../..#../..#..",
+  "U": "#...#/#...#/#...#/#...#/#...#/#...#/.###.",
+  "V": "#...#/#...#/#...#/#...#/#...#/.#.#./..#..",
+  "W": "#...#/#...#/#...#/#...#/#.#.#/##.##/#...#",
+  "X": "#...#/#...#/.#.#./..#../.#.#./#...#/#...#",
+  "Y": "#...#/#...#/.#.#./..#../..#../..#../..#..",
+  "Z": "#####/....#/...#./..#../.#.../#..../#####",
+  "0": ".###./#...#/#..##/#.#.#/##..#/#...#/.###.",
+  "1": "..#../.##../..#../..#../..#../..#../.###.",
+  "2": ".###./#...#/....#/...#./..#../.#.../#####",
+  "3": "####./....#/....#/.###./....#/....#/####.",
+  "4": "...#./..##./.#.#./#..#./#####/...#./...#.",
+  "5": "#####/#..../####./....#/....#/#...#/.###.",
+  "6": ".###./#...#/#..../####./#...#/#...#/.###.",
+  "7": "#####/....#/...#./..#../.#.../.#.../.#...",
+  "8": ".###./#...#/#...#/.###./#...#/#...#/.###.",
+  "9": ".###./#...#/#...#/.####/....#/#...#/.###.",
+  " ": "...../...../...../...../...../...../.....",
+  ".": "...../...../...../...../...../..##./..##.",
+  ",": "...../...../...../...../..##./..##./.#...",
+  "!": "..#../..#../..#../..#../..#../...../..#..",
+  "?": ".###./#...#/....#/...#./..#../...../..#..",
+  "-": "...../...../...../#####/...../...../.....",
+  "·": "...../...../...../..#../...../...../.....",
+  "*": "...../..#../#.#.#/.###./#.#.#/..#../.....",
+  "(": "...#./..#../.#.../.#.../.#.../..#../...#.",
+  ")": ".#.../..#../...#./...#./...#./..#../.#...",
+  ":": "...../..##./..##./...../..##./..##./.....",
+  "~": "...../...../.#.../#.#.#/...#./...../.....",
+  "/": "....#/....#/...#./..#../.#.../#..../#....",
+  "+": "...../..#../..#../#####/..#../..#../.....",
+  "'": "..#../..#../...../...../...../...../....."
+};
+const FONT = {};
+for (const k in FONT_SRC) FONT[k] = FONT_SRC[k].split("/");
+// characters that share a glyph
+const FONT_ALIAS = { "—": "-", "–": "-", "•": "·", "★": "*", "″": "'", "’": "'" };
+function glyphFor(ch) {
+  if (FONT_ALIAS[ch]) ch = FONT_ALIAS[ch];
+  return FONT[ch] || FONT["?"];
+}
+
+// size = glyph block height in logical units; y = vertical centre
+function pixText(str, x, y, size, color, align = "center") {
+  str = String(str).toUpperCase();
+  let ps = Math.max(1, Math.round(size / FONT_H * viewScale));
+  const maxW = canvas.width - 8 * viewScale;
+  const widthAt = p => str.length * (FONT_W + 1) * p - p;
+  while (ps > 1 && widthAt(ps) > maxW) ps--;
+
+  const w = widthAt(ps), h = FONT_H * ps;
+  let dx = Math.round(x * viewScale);
+  if (align === "center") dx -= Math.round(w / 2);
+  else if (align === "right") dx -= w;
+  const dy = Math.round(y * viewScale - h / 2);
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = color;
+  for (let i = 0; i < str.length; i++) {
+    const gl = glyphFor(str[i]);
+    const gx = dx + i * (FONT_W + 1) * ps;
+    for (let r = 0; r < FONT_H; r++) {
+      const row = gl[r];
+      let c = 0;
+      while (c < FONT_W) {
+        if (row[c] === "#") {
+          let run = 1;
+          while (c + run < FONT_W && row[c + run] === "#") run++;
+          ctx.fillRect(gx + c * ps, dy + r * ps, run * ps, ps);
+          c += run;
+        } else c++;
+      }
+    }
+  }
+  ctx.restore();
 }
 
 /* ---------- render ---------- */
@@ -791,9 +885,15 @@ function render() {
     ctx.setTransform(viewScale, 0, 0, viewScale, 0, 0);
     ctx.fillStyle = "#0b0a14";
     ctx.fillRect(0, 0, W, H);
-    drawText("↻", W / 2, H / 2 - 24, Math.min(40, W / 5), PAL.ember);
-    drawText("rotate your device", W / 2, H / 2 + 14, Math.min(14, W / 15), PAL.text);
-    drawText("landscape only", W / 2, H / 2 + 34, Math.min(10, W / 15), PAL.textDim);
+    // rotate pictogram: a portrait frame turning into a landscape one
+    ctx.strokeStyle = PAL.ember;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(W / 2 - 9, H / 2 - 58, 18, 28);
+    ctx.globalAlpha = 0.45;
+    ctx.strokeRect(W / 2 - 14, H / 2 - 52, 28, 18);
+    ctx.globalAlpha = 1;
+    pixText("ROTATE YOUR DEVICE", W / 2, H / 2 + 6, 12, PAL.text);
+    pixText("LANDSCAPE ONLY", W / 2, H / 2 + 26, 9, PAL.textDim);
     return;
   }
 
@@ -979,33 +1079,33 @@ function render() {
   g = ctx;
 
   if (state === "play") {
-    drawText(String(score).padStart(4, "0"), W / 2, 20, 18, PAL.text);
+    pixText(String(score).padStart(4, "0"), W / 2, 20, 18, PAL.text);
     if (combo > 1) {
       const pulse = 1 + Math.sin(t * 10) * 0.08;
-      drawText(`x${combo}`, W / 2 + 46, 20, Math.round(12 * pulse), PAL.gold);
+      pixText(`x${combo}`, W / 2 + 46, 20, Math.round(12 * pulse), PAL.gold);
     }
     // depth marker
-    drawText(`DEPTH ${ZONES[zoneIdx].num}`, W - 14, 16, 10, PAL.textDim, "right");
+    pixText(`DEPTH ${ZONES[zoneIdx].num}`, W - 14, 16, 10, PAL.textDim, "right");
     // dash cooldown bar
     const cdw = 50, pct = 1 - player.dashCd / 0.9;
     px(W / 2 - cdw / 2, 32, cdw, 3, "#2a2440");
     px(W / 2 - cdw / 2, 32, Math.round(cdw * pct), 3, pct >= 1 ? PAL.wisp : PAL.textDim);
 
     // frost timer
-    if (frostT > 0) drawText(`FROST ${frostT.toFixed(1)}`, 14, 16, 10, PAL.frost, "left");
+    if (frostT > 0) pixText(`FROST ${frostT.toFixed(1)}`, 14, 16, 10, PAL.frost, "left");
 
     // surge warning
     if (surgeWarn > 0 && Math.sin(t * 14) > -0.2) {
-      drawText("! SURGE INCOMING !", W / 2, 58, 14, PAL.danger);
+      pixText("! SURGE INCOMING !", W / 2, 58, 14, PAL.danger);
     }
 
     // zone banner: name + the rule that just changed
     if (zoneBanner > 0) {
       const a = clamp(zoneBanner > 3 ? (3.5 - zoneBanner) * 2 : zoneBanner / 3, 0, 1);
       ctx.globalAlpha = a;
-      drawText(`— DEPTH ${ZONES[zoneIdx].num} —`, W / 2, H / 2 - 46, 12, PAL.textDim);
-      drawText(ZONES[zoneIdx].name, W / 2, H / 2 - 26, 20, PAL.text);
-      drawText(ZONES[zoneIdx].rule, W / 2, H / 2 - 6, 11, PAL.gold);
+      pixText(`— DEPTH ${ZONES[zoneIdx].num} —`, W / 2, H / 2 - 46, 12, PAL.textDim);
+      pixText(ZONES[zoneIdx].name, W / 2, H / 2 - 26, 20, PAL.text);
+      pixText(ZONES[zoneIdx].rule, W / 2, H / 2 - 6, 11, PAL.gold);
       ctx.globalAlpha = 1;
     }
 
@@ -1020,7 +1120,7 @@ function render() {
         "collect the glowing wisps",
         "press SPACE to dash — it destroys shades"
       ];
-      drawText(msgs[tutStage], W / 2, H - 30, 12, PAL.text);
+      pixText(msgs[tutStage], W / 2, H - 30, 12, PAL.text);
     }
 
     /* touch UI */
@@ -1053,7 +1153,7 @@ function render() {
       ctx.arc(db.x, db.y, DASH_R - 3, -Math.PI / 2, -Math.PI / 2 + TAU * pct2);
       ctx.stroke();
       ctx.globalAlpha = pct2 >= 1 ? 0.95 : 0.5;
-      drawText("DASH", db.x, db.y, 10, pct2 >= 1 ? PAL.wisp : PAL.textDim);
+      pixText("DASH", db.x, db.y, 10, pct2 >= 1 ? PAL.wisp : PAL.textDim);
       ctx.globalAlpha = 1;
     }
   }
@@ -1063,20 +1163,20 @@ function render() {
     ctx.globalAlpha = titleA * 0.92;
     const bob = Math.sin(t * 2) * 3;
     glowCircle(W / 2, 90 + bob, 110, "rgba(255,140,50,0.07)");
-    drawText("E M B E R   D R I F T", W / 2, 78 + bob, 30, PAL.ember);
+    pixText("EMBER DRIFT", W / 2, 78 + bob, 30, PAL.ember);
     if (Math.sin(t * 4) > -0.3) {
-      drawText(isTouch || 'ontouchstart' in window ? "touch and drag to play" : "WASD / arrows to play", W / 2, 112 + bob, 12, PAL.text);
+      pixText(isTouch || 'ontouchstart' in window ? "TOUCH AND DRAG TO PLAY" : "WASD / ARROWS TO PLAY", W / 2, 110 + bob, 11, PAL.text);
     }
-    if (best > 0) drawText(`best ${best}`, W / 2, 134 + bob, 10, PAL.gold);
+    if (best > 0) pixText(`BEST ${best}`, W / 2, 132 + bob, 9, PAL.gold);
     ctx.globalAlpha = 1;
   }
 
   if (state === "over") {
     ctx.fillStyle = "rgba(8,6,16,0.55)";
     ctx.fillRect(0, 0, W, H);
-    drawText("THE EMBER FADES", W / 2, 82, 22, PAL.danger);
-    drawText(`score  ${score}`, W / 2, 116, 15, PAL.text);
-    drawText(`survived ${Math.floor(runT)}s in depth ${ZONES[zoneIdx].num} · ${ZONES[zoneIdx].name}`, W / 2, 138, 10, PAL.textDim);
+    pixText("THE EMBER FADES", W / 2, 82, 22, PAL.danger);
+    pixText(`score  ${score}`, W / 2, 116, 15, PAL.text);
+    pixText(`survived ${Math.floor(runT)}s in depth ${ZONES[zoneIdx].num} · ${ZONES[zoneIdx].name}`, W / 2, 138, 10, PAL.textDim);
 
     // near-miss hook: show how close the next depth was
     if (zoneIdx < ZONES.length - 1) {
@@ -1084,22 +1184,22 @@ function render() {
       const span = next.at - cur.at;
       const prog = clamp((depthClock() - cur.at) / span, 0, 1);
       const away = Math.max(1, Math.ceil(next.at - depthClock()));
-      drawText(`DEPTH ${next.num} · ${next.name} was ~${away}s away`, W / 2, 162, 11, PAL.gold);
+      pixText(`DEPTH ${next.num} · ${next.name} was ~${away}s away`, W / 2, 162, 11, PAL.gold);
       const bw = 160;
       px(W / 2 - bw / 2, 174, bw, 4, "#2a2440");
       px(W / 2 - bw / 2, 174, Math.round(bw * prog), 4, PAL.gold);
     } else {
-      drawText("you reached the final depth", W / 2, 162, 11, PAL.gold);
+      pixText("you reached the final depth", W / 2, 162, 11, PAL.gold);
     }
 
     if (score >= best && score > 0) {
       const pulse = 1 + Math.sin(t * 8) * 0.1;
-      drawText("* NEW BEST *", W / 2, 196, Math.round(13 * pulse), PAL.gold);
+      pixText("* NEW BEST *", W / 2, 196, Math.round(13 * pulse), PAL.gold);
     } else if (best > 0) {
-      drawText(`best  ${best}`, W / 2, 196, 11, PAL.textDim);
+      pixText(`best  ${best}`, W / 2, 196, 11, PAL.textDim);
     }
     if (overTimer > 0.8 && Math.sin(t * 4) > -0.3) {
-      drawText(isTouch ? "— tap to rekindle —" : "— press any key to rekindle —", W / 2, 226, 12, PAL.text);
+      pixText(isTouch ? "— tap to rekindle —" : "— press any key to rekindle —", W / 2, 226, 12, PAL.text);
     }
   }
 
