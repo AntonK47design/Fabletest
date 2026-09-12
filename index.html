@@ -211,12 +211,12 @@ function spawnShade() {
   else if (side === 1) { x = W + 15; y = rnd(0, H); }
   else if (side === 2) { x = rnd(0, W); y = -15; }
   else { x = rnd(0, W); y = H + 15; }
-  const speed = rnd(0.55, 0.85) + Math.min(score * 0.004, 0.9);
+  const speed = rnd(0.75, 1.05) + Math.min(score * 0.006, 1.1);
   shades.push({
     x, y, vx: 0, vy: 0, speed,
     r: rnd(6, 9), wob: rnd(0, TAU),
-    type: Math.random() < 0.25 && score > 8 ? "darter" : "seeker",
-    darting: 0, dartCd: rnd(2, 4)
+    type: Math.random() < 0.3 && score > 5 ? "darter" : "seeker",
+    darting: 0, dartCd: rnd(1.5, 3)
   });
 }
 
@@ -239,8 +239,8 @@ function reset() {
   wisps = []; shades = []; parts = [];
   score = 0; combo = 0; comboTimer = 0;
   shake = 0; flash = 0; slowmo = 0;
-  for (let i = 0; i < 3; i++) spawnWisp();
-  shadeSpawnT = 3;
+  for (let i = 0; i < 4; i++) spawnWisp();
+  shadeSpawnT = 1.5;
 }
 
 function tryStart(code) {
@@ -297,7 +297,7 @@ function update(dt) {
   const am = Math.hypot(ax, ay);
   if (am > 1) { ax /= am; ay /= am; }
 
-  const ACC = 420, FRIC = 0.90, MAXV = 165;
+  const ACC = 560, FRIC = 0.90, MAXV = 205;
   player.vx += ax * ACC * d;
   player.vy += ay * ACC * d;
   player.vx *= Math.pow(FRIC, d * 60);
@@ -311,8 +311,8 @@ function update(dt) {
   if (wantDash && player.dashCd <= 0 && (am > 0.1 || v > 20)) {
     const dxn = am > 0.1 ? ax : player.vx / v;
     const dyn = am > 0.1 ? ay : player.vy / v;
-    player.vx = dxn * 420; player.vy = dyn * 420;
-    player.dashCd = 1.4; player.dashT = 0.16;
+    player.vx = dxn * 480; player.vy = dyn * 480;
+    player.dashCd = 0.9; player.dashT = 0.16;
     burst(player.x, player.y, PAL.emberHot, 14, 3, 0.4);
     shake = Math.max(shake, 2.5);
     sfx.dash();
@@ -364,16 +364,16 @@ function update(dt) {
       burst(wsp.x, wsp.y, "#ffffff", 5, 1.2, 0.3);
       shake = Math.max(shake, 1.5);
       spawnWisp();
-      if (wisps.length < 2 + Math.floor(score / 25)) spawnWisp();
+      if (wisps.length < 3 + Math.floor(score / 18)) spawnWisp();
     }
   }
 
   /* --- shades --- */
   shadeSpawnT -= dt;
-  const targetShades = clamp(2 + Math.floor(score / 12), 2, 11);
+  const targetShades = clamp(3 + Math.floor(score / 9), 3, 14);
   if (shadeSpawnT <= 0 && shades.length < targetShades) {
     spawnShade();
-    shadeSpawnT = rnd(1.2, 2.8);
+    shadeSpawnT = rnd(0.7, 1.8);
   }
 
   let nearDanger = false;
@@ -384,10 +384,10 @@ function update(dt) {
 
     if (s.type === "darter") {
       s.dartCd -= dt;
-      if (s.dartCd <= 0 && m < 150) {
+      if (s.dartCd <= 0 && m < 170) {
         s.darting = 0.45;
-        s.dartCd = rnd(2.5, 4);
-        s.dvx = dx / m * 260; s.dvy = dy / m * 260;
+        s.dartCd = rnd(1.8, 3);
+        s.dvx = dx / m * 320; s.dvy = dy / m * 320;
         burst(s.x, s.y, PAL.shade, 8, 2, 0.4);
       }
       if (s.darting > 0) {
@@ -399,8 +399,8 @@ function update(dt) {
       }
     } else {
       // seeker with wobble
-      s.x += (dx / m * s.speed * 50 + Math.cos(s.wob) * 14) * d;
-      s.y += (dy / m * s.speed * 50 + Math.sin(s.wob * 1.3) * 14) * d;
+      s.x += (dx / m * s.speed * 62 + Math.cos(s.wob) * 16) * d;
+      s.y += (dy / m * s.speed * 62 + Math.sin(s.wob * 1.3) * 16) * d;
     }
 
     // near-miss tension
@@ -592,7 +592,7 @@ function render() {
       drawText(`x${combo}`, W / 2 + 44, 18, Math.round(11 * pulse), PAL.gold);
     }
     // dash cooldown bar
-    const cdw = 50, pct = 1 - player.dashCd / 1.4;
+    const cdw = 50, pct = 1 - player.dashCd / 0.9;
     px(W / 2 - cdw / 2, 30, cdw, 3, "#2a2440");
     px(W / 2 - cdw / 2, 30, Math.round(cdw * pct), 3, pct >= 1 ? PAL.wisp : PAL.textDim);
     if (pct >= 1) drawText("DASH READY", W / 2, 41, 7, PAL.wispDim);
