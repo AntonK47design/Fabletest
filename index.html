@@ -588,8 +588,10 @@ function checkZone() {
     zoneBanner = 3.5;
     sfx.zone();
     flash = 0.4;
-    // telegraph the rule change: a moment of slow-mo + fresh wisps
-    slowmo = Math.max(slowmo, 0.6);
+    /* No slow-motion here. A descent is the moment the game gets harder, and
+       dropping to 35% speed for half a second read as the difficulty being
+       reset. The jolt sells acceleration instead of a pause. */
+    shake = Math.max(shake, 4.5);
     for (let i = 0; i < 2; i++) spawnWisp();
   }
 }
