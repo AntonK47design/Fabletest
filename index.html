@@ -284,6 +284,24 @@ const sfx = {
   warn()    { beep(180, 0.22, "square", 0.07); setTimeout(() => beep(180, 0.22, "square", 0.07), 300); }
 };
 
+/* ---------- keyboard labels ----------
+   Movement reads e.code, i.e. physical key position, so the WASD cluster
+   already works on AZERTY (where those keys are labelled ZQSD) and on
+   QWERTZ. Only the on-screen hint would lie, so ask the browser what those
+   physical keys are actually labelled. Chrome/Edge support this; elsewhere
+   the QWERTY default stands. */
+let MOVE_KEYS = "WASD";
+(async () => {
+  try {
+    if (navigator.keyboard && navigator.keyboard.getLayoutMap) {
+      const map = await navigator.keyboard.getLayoutMap();
+      const lbl = c => (map.get(c) || "").trim().toUpperCase();
+      const w = lbl("KeyW"), a = lbl("KeyA"), sK = lbl("KeyS"), d = lbl("KeyD");
+      if (w && a && sK && d && (w + a + sK + d).length === 4) MOVE_KEYS = w + a + sK + d;
+    }
+  } catch (e) { /* keep the default */ }
+})();
+
 /* ---------- first input: unlock audio + play the start jingle ----------
    Safari only lets an AudioContext start from inside a gesture handler, so
    this must run here and not lazily from the game loop, or the run is mute. */
@@ -1163,7 +1181,7 @@ function render() {
         "collect the glowing wisps",
         "tap DASH — it destroys shades"
       ] : [
-        "WASD or arrows to steer",
+        `${MOVE_KEYS} or arrows to steer`,
         "collect the glowing wisps",
         "press SPACE to dash — it destroys shades"
       ];
@@ -1237,7 +1255,7 @@ function render() {
       drawText(isTouch ? "— touch and drag to begin —" : "— press any key to begin —", W / 2, 215, 11, PAL.text);
     }
     drawText(isTouch ? "drag to move   ·   DASH button to dash"
-                     : "WASD / arrows to move   ·   SPACE to dash", W / 2, 248, 9, PAL.textDim);
+                     : `${MOVE_KEYS} / arrows to move   ·   SPACE to dash`, W / 2, 248, 9, PAL.textDim);
     if (best > 0) drawText(`best ${best}`, W / 2, 268, 9, PAL.gold);
     wctx.globalAlpha = 1;
   }
