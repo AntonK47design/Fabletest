@@ -188,12 +188,22 @@ const sfx = {
   warn()    { beep(180, 0.22, "square", 0.07); setTimeout(() => beep(180, 0.22, "square", 0.07), 300); }
 };
 
+/* ---------- first input: unlock audio + play the start jingle ----------
+   Safari only lets an AudioContext start from inside a gesture handler, so
+   this must run here and not lazily from the game loop, or the run is mute. */
+function firstInput() {
+  const first = !inputSeen;
+  inputSeen = true;
+  audio();
+  if (first) sfx.start();
+}
+
 /* ---------- input: keyboard ---------- */
 const keys = {};
 window.addEventListener("keydown", e => {
   keys[e.code] = true;
   if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code)) e.preventDefault();
-  inputSeen = true;
+  firstInput();
   if (state === "over") { tryRestart(); return; }
   if (e.code === "Space") wantDash = true;
 });
@@ -213,9 +223,8 @@ function canvasPos(e) {
 }
 
 canvas.addEventListener("pointerdown", e => {
-  audio();
   if (e.pointerType === "touch") isTouch = true;
-  inputSeen = true;
+  firstInput();
   if (state === "over") { tryRestart(); return; }
   const p = canvasPos(e);
   const db = dashBtnPos();
@@ -632,10 +641,10 @@ function update(dt) {
 
   /* --- shades (difficulty ramps by elapsed time, after a grace period) --- */
   shadeSpawnT -= dt;
-  const targetShades = runT < GRACE ? 0 : clamp(3 + Math.floor((runT - GRACE) / 14), 3, 12);
+  const targetShades = runT < GRACE ? 0 : clamp(4 + Math.floor((runT - GRACE) / 9), 4, 11);
   if (shadeSpawnT <= 0 && shades.length < targetShades) {
     spawnShade();
-    shadeSpawnT = rnd(0.9, 2.0);
+    shadeSpawnT = rnd(0.7, 1.6);
   }
 
   const fr = frostT > 0 ? 0.3 : 1; // frost slows all shades
