@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Cache-Control" content="no-cache, must-revalidate">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>EMBER DRIFT</title>
 <style>
@@ -289,8 +290,17 @@ const sfx = {
 function firstInput() {
   const first = !inputSeen;
   inputSeen = true;
-  audio();
-  if (first) sfx.start();
+  const ac = audio();
+  if (!first) return;
+  /* resume() is asynchronous. On Safari the state can still read "suspended"
+     for a tick after the gesture, and beep() drops anything that is not yet
+     running — so the jingle has to wait for the resume to actually land,
+     otherwise the one sound that proves audio works is silently swallowed. */
+  if (ac && ac.state !== "running") {
+    try { ac.resume().then(() => sfx.start()).catch(() => {}); } catch (e) {}
+  } else {
+    sfx.start();
+  }
 }
 
 /* ---------- input: keyboard ---------- */
