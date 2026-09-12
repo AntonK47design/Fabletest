@@ -228,7 +228,7 @@ const curHill = ZONES[0].hills.map(hexToRgb);
    so the context is created/resumed from EVERY gesture type, in the
    capture phase, at window level — nothing can swallow the unlock. */
 let AC = null, muted = false, audioReady = false;
-let gestureCount = 0, beepTries = 0;   // nur fuer die Ton-Diagnose
+let gestureCount = 0, beepTries = 0, sfxPulse = 0;   // nur fuer die Ton-Diagnose
 /* CrazyGames requires platform mute to take priority over the in-game
    toggle, so audio plays only when BOTH are unmuted. Flipping the in-game
    speaker can never re-enable sound while the platform has muted us. */
@@ -275,6 +275,7 @@ function beep(freq, dur, type = "square", vol = 0.08, slide = 0) {
       o.connect(g2).connect(ac.destination);
       o.start();
       o.stop(ac.currentTime + dur);
+      sfxPulse = 0.25;      // visible proof that a sound actually left the game
     } catch (e) {}
   };
   if (ac.state === "running") { emit(); return; }
@@ -605,6 +606,7 @@ function update(dt) {
   if (comboTimer > 0) { comboTimer -= dt; if (comboTimer <= 0) combo = 0; }
   if (zoneBanner > 0) zoneBanner -= dt;
   if (frostT > 0) frostT -= dt;
+  if (sfxPulse > 0) sfxPulse = Math.max(0, sfxPulse - dt);
   if (player.inv > 0) player.inv -= dt;
   if (inputSeen && titleA > 0) titleA = Math.max(0, titleA - dt * 1.5);
 
@@ -1263,7 +1265,7 @@ function render() {
   /* If the context still is not running after a few seconds of play, the
      embedder never handed this document a user activation. Say so and give a
      target to tap — a direct tap inside the frame is what unblocks it. */
-  if (!audioReady && runT > 3) {
+  if (!audioReady && gestureCount > 0 && runT > 3) {
     if (Math.sin(t * 3) > -0.5) {
       drawText("tap here for sound", SPK.x + 14, SPK.y - 3, 9, PAL.gold, "left");
     }
@@ -1285,8 +1287,9 @@ function render() {
     if (audioMuted()) {
       for (let i = 0; i < 5; i++) { px(x + 2 + i, y - 4 + i, 1, 1, c); px(x + 6 - i, y - 4 + i, 1, 1, c); }
     } else {
-      px(x + 2, y - 3, 1, 6, c);
-      px(x + 5, y - 5, 1, 10, c);
+      const live = sfxPulse > 0 ? PAL.wisp : c;
+      px(x + 2, y - 3, 1, 6, live);
+      px(x + 5, y - 5, 1, 10, live);
     }
     wctx.globalAlpha = 1;
   }
