@@ -50,10 +50,19 @@
    EMBER DRIFT — a tiny indie arcade game
    You are a drifting ember. Collect wisps. Dodge the shades.
    Descend through the Depths. Survive the surges.
+
+   Rendering: the world is drawn into a low-res pixel buffer and
+   upscaled with nearest-neighbor for the chunky indie look; HUD
+   text is drawn on top at native resolution so it stays legible.
    ============================================================ */
 
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
+
+// low-res world buffer (the pixel-art layer)
+const world = document.createElement("canvas");
+const wctx = world.getContext("2d");
+let g = wctx;   // current draw target for the shared helpers
 
 /* ---------- safe storage (cross-origin iframes block localStorage) ---------- */
 const store = (() => {
@@ -77,7 +86,7 @@ const store = (() => {
 })();
 
 /* ---------- responsive canvas (fills a 16:9 iframe, logical height fixed) ---------- */
-let W = 569, H = 320, viewScale = 1;
+let W = 533, H = 300, viewScale = 1;
 function fitCanvas() {
   const dpr = Math.max(1, window.devicePixelRatio || 1);
   const cw = Math.max(1, window.innerWidth), ch = Math.max(1, window.innerHeight);
@@ -85,9 +94,11 @@ function fitCanvas() {
   canvas.style.height = ch + "px";
   canvas.width = Math.round(cw * dpr);
   canvas.height = Math.round(ch * dpr);
-  H = 320;
+  H = 300;
+  W = Math.max(100, Math.round(H * canvas.width / canvas.height));
+  world.width = W;
+  world.height = H;
   viewScale = canvas.height / H;
-  W = canvas.width / viewScale;
   makeStars();
   clampEntities();
 }
@@ -154,13 +165,13 @@ function beep(freq, dur, type = "square", vol = 0.08, slide = 0) {
   try {
     const ac = audio();
     if (!ac) return;
-    const o = ac.createOscillator(), g = ac.createGain();
+    const o = ac.createOscillator(), g2 = ac.createGain();
     o.type = type;
     o.frequency.setValueAtTime(freq, ac.currentTime);
     if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), ac.currentTime + dur);
-    g.gain.setValueAtTime(vol, ac.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + dur);
-    o.connect(g).connect(ac.destination);
+    g2.gain.setValueAtTime(vol, ac.currentTime);
+    g2.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + dur);
+    o.connect(g2).connect(ac.destination);
     o.start();
     o.stop(ac.currentTime + dur);
   } catch (e) { /* audio blocked until interaction */ }
@@ -191,10 +202,10 @@ window.addEventListener("keyup", e => keys[e.code] = false);
 /* ---------- input: touch (floating joystick + dash button) ---------- */
 let isTouch = false;                 // shows touch UI once a touch is seen
 let joy = null;                      // { id, bx, by, kx, ky } in canvas coords
-const JOY_R = 30;                    // joystick travel radius
+const JOY_R = 28;                    // joystick travel radius
 const JOY_DEAD = 6;                  // dead zone so a resting thumb doesn't drift
-const DASH_R = 30;                   // thumb-sized dash button
-function dashBtnPos() { return { x: W - DASH_R - 18, y: H - DASH_R - 16 }; }
+const DASH_R = 28;                   // thumb-sized dash button
+function dashBtnPos() { return { x: W - DASH_R - 16, y: H - DASH_R - 14 }; }
 
 function canvasPos(e) {
   const r = canvas.getBoundingClientRect();
@@ -264,10 +275,10 @@ let moveHeld = 0;
 
 let zoneIdx = 0, zoneBanner = 0;   // banner countdown for zone announcements
 let frostT = 0;                    // frost power-up: shades slowed
-let surgeT = 50, surgeWarn = 0;    // surge event timers
+let surgeT = 45, surgeWarn = 0;    // surge event timers
 let puSpawnT = 30;                 // power-up spawn timer
 
-const GRACE = 5;                   // seconds before the first shade may spawn
+const GRACE = 4;                   // seconds before the first shade may spawn
 
 function depthClock() { return runT + score * 0.5; }
 function zoneForClock(c) {
@@ -276,8 +287,11 @@ function zoneForClock(c) {
   return z;
 }
 
+// enemy speed grows with elapsed run time
+function timeSpeedBonus() { return Math.min(runT * 0.009, 1.3); }
+
 const player = {
-  x: 280, y: 160, vx: 0, vy: 0,
+  x: 266, y: 150, vx: 0, vy: 0,
   r: 5, angle: 0,
   dashCd: 0, dashT: 0, alive: true,
   shield: false, inv: 0,
@@ -328,7 +342,7 @@ function edgeSpawnPoint() {
 
 function spawnShade(forceType) {
   const { x, y } = edgeSpawnPoint();
-  const speed = rnd(0.55, 0.85) + Math.min(runT * 0.0045, 1.0);
+  const speed = rnd(0.7, 1.0) + timeSpeedBonus();
 
   // enemy pool widens as you descend through zones
   let type = forceType;
@@ -390,7 +404,7 @@ function reset() {
   shake = 0; flash = 0; slowmo = 0;
   runT = 0;
   zoneIdx = 0; zoneBanner = 0;
-  frostT = 0; surgeT = rnd(45, 55); surgeWarn = 0; puSpawnT = rnd(28, 34);
+  frostT = 0; surgeT = rnd(40, 50); surgeWarn = 0; puSpawnT = rnd(26, 32);
   wantDash = false;
   joy = null;
   for (let i = 0; i < 4; i++) spawnWisp();
@@ -597,7 +611,7 @@ function update(dt) {
   }
 
   /* --- surge events (waves of pressure) --- */
-  if (runT >= 45 && surgeWarn <= 0) {
+  if (runT >= 40 && surgeWarn <= 0) {
     surgeT -= dt;
     if (surgeT <= 0) {
       surgeWarn = 1.8;
@@ -612,16 +626,16 @@ function update(dt) {
       for (let i = 0; i < 2; i++) spawnWisp();
       shake = Math.max(shake, 4);
       // Depth V rule: the choir quickens the surges
-      surgeT = zoneIdx >= 4 ? rnd(25, 35) : rnd(40, 55);
+      surgeT = zoneIdx >= 4 ? rnd(25, 35) : rnd(38, 50);
     }
   }
 
   /* --- shades (difficulty ramps by elapsed time, after a grace period) --- */
   shadeSpawnT -= dt;
-  const targetShades = runT < GRACE ? 0 : clamp(2 + Math.floor((runT - GRACE) / 22), 2, 11);
+  const targetShades = runT < GRACE ? 0 : clamp(3 + Math.floor((runT - GRACE) / 14), 3, 12);
   if (shadeSpawnT <= 0 && shades.length < targetShades) {
     spawnShade();
-    shadeSpawnT = rnd(1.2, 2.8);
+    shadeSpawnT = rnd(0.9, 2.0);
   }
 
   const fr = frostT > 0 ? 0.3 : 1; // frost slows all shades
@@ -648,7 +662,7 @@ function update(dt) {
         if (s.dartCd <= 0 && m < 160) {
           s.windup = 0.35;
           s.dartCd = rnd(2.2, 3.5);
-          s.dvx = dx / m * 300; s.dvy = dy / m * 300;
+          s.dvx = dx / m * 320; s.dvy = dy / m * 320;
           burst(s.x, s.y, PAL.shade, 8, 2, 0.4);
         }
         s.x += dx / m * s.speed * 35 * d * fr;
@@ -666,7 +680,7 @@ function update(dt) {
       s.y += (ty - s.y) / mm * Math.min(sp * d, mm);
     } else {
       // seeker / splitter: chase with wobble
-      const chase = s.type === "splitter" ? 45 : 50;
+      const chase = s.type === "splitter" ? 48 : 58;
       s.x += (dx / m * s.speed * chase + Math.cos(s.wob) * 14) * d * fr;
       s.y += (dy / m * s.speed * chase + Math.sin(s.wob * 1.3) * 14) * d * fr;
     }
@@ -730,33 +744,34 @@ function die() {
   }
 }
 
-/* ---------- render ---------- */
-function px(x, y, w, h, color) { ctx.fillStyle = color; ctx.fillRect(Math.round(x), Math.round(y), w, h); }
+/* ---------- render helpers (draw into whatever `g` targets) ---------- */
+function px(x, y, w, h, color) { g.fillStyle = color; g.fillRect(Math.round(x), Math.round(y), w, h); }
 
 function glowCircle(x, y, r, color, alpha = 1) {
-  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-  g.addColorStop(0, color);
-  g.addColorStop(1, "transparent");
-  ctx.globalAlpha = alpha;
-  ctx.fillStyle = g;
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, TAU);
-  ctx.fill();
-  ctx.globalAlpha = 1;
+  const gr = g.createRadialGradient(x, y, 0, x, y, r);
+  gr.addColorStop(0, color);
+  gr.addColorStop(1, "transparent");
+  g.globalAlpha = alpha;
+  g.fillStyle = gr;
+  g.beginPath();
+  g.arc(x, y, r, 0, TAU);
+  g.fill();
+  g.globalAlpha = 1;
 }
 
 function drawText(str, x, y, size, color, align = "center") {
-  ctx.fillStyle = color;
-  ctx.font = `bold ${size}px 'Courier New', Courier, monospace`;
-  ctx.textAlign = align;
-  ctx.textBaseline = "middle";
-  ctx.fillText(str, Math.round(x), Math.round(y));
+  g.fillStyle = color;
+  g.font = `bold ${size}px 'Courier New', Courier, monospace`;
+  g.textAlign = align;
+  g.textBaseline = "middle";
+  g.fillText(str, Math.round(x), Math.round(y));
 }
 
+/* ---------- render ---------- */
 function render() {
-  ctx.setTransform(viewScale, 0, 0, viewScale, 0, 0);
-
   if (isPortrait()) {
+    g = ctx;
+    ctx.setTransform(viewScale, 0, 0, viewScale, 0, 0);
     ctx.fillStyle = "#0b0a14";
     ctx.fillRect(0, 0, W, H);
     drawText("↻", W / 2, H / 2 - 24, Math.min(40, W / 5), PAL.ember);
@@ -765,43 +780,45 @@ function render() {
     return;
   }
 
-  // camera shake
-  ctx.save();
-  if (shake > 0) ctx.translate(rnd(-shake, shake) * 0.5, rnd(-shake, shake) * 0.5);
+  /* ===== world layer: low-res pixel buffer ===== */
+  g = wctx;
+  wctx.setTransform(1, 0, 0, 1, 0, 0);
+  wctx.save();
+  if (shake > 0) wctx.translate(rnd(-shake, shake) * 0.5, rnd(-shake, shake) * 0.5);
 
   // background gradient (zone-blended)
-  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  const bg = wctx.createLinearGradient(0, 0, 0, H);
   bg.addColorStop(0, rgbStr(curBg[0]));
   bg.addColorStop(0.6, rgbStr(curBg[1]));
   bg.addColorStop(1, rgbStr(curBg[2]));
-  ctx.fillStyle = bg;
-  ctx.fillRect(-10, -10, W + 20, H + 20);
+  wctx.fillStyle = bg;
+  wctx.fillRect(-10, -10, W + 20, H + 20);
 
   // stars
   for (const s of stars) {
     const tw = 0.3 + 0.7 * Math.abs(Math.sin(t * 0.8 + s.tw));
-    ctx.globalAlpha = tw * s.z * 0.8;
+    wctx.globalAlpha = tw * s.z * 0.8;
     px(s.x, s.y, s.z > 0.7 ? 2 : 1, s.z > 0.7 ? 2 : 1, "#cdc8ff");
   }
-  ctx.globalAlpha = 1;
+  wctx.globalAlpha = 1;
 
   // distant hills (parallax silhouettes, zone-blended)
-  ctx.fillStyle = rgbStr(curHill[0]);
-  ctx.beginPath();
-  ctx.moveTo(0, H);
+  wctx.fillStyle = rgbStr(curHill[0]);
+  wctx.beginPath();
+  wctx.moveTo(0, H);
   for (let x = 0; x <= W; x += 8) {
-    ctx.lineTo(x, H - 40 - Math.sin(x * 0.013 + 2) * 18 - Math.sin(x * 0.031) * 8);
+    wctx.lineTo(x, H - 40 - Math.sin(x * 0.013 + 2) * 18 - Math.sin(x * 0.031) * 8);
   }
-  ctx.lineTo(W, H);
-  ctx.fill();
-  ctx.fillStyle = rgbStr(curHill[1]);
-  ctx.beginPath();
-  ctx.moveTo(0, H);
+  wctx.lineTo(W, H);
+  wctx.fill();
+  wctx.fillStyle = rgbStr(curHill[1]);
+  wctx.beginPath();
+  wctx.moveTo(0, H);
   for (let x = 0; x <= W; x += 8) {
-    ctx.lineTo(x, H - 22 - Math.sin(x * 0.02 + 5) * 12 - Math.cos(x * 0.045) * 6);
+    wctx.lineTo(x, H - 22 - Math.sin(x * 0.02 + 5) * 12 - Math.cos(x * 0.045) * 6);
   }
-  ctx.lineTo(W, H);
-  ctx.fill();
+  wctx.lineTo(W, H);
+  wctx.fill();
 
   // ambient motes
   for (const e of embers) {
@@ -812,10 +829,10 @@ function render() {
 
   // particles
   for (const p of parts) {
-    ctx.globalAlpha = clamp(p.life / p.max, 0, 1);
+    wctx.globalAlpha = clamp(p.life / p.max, 0, 1);
     px(p.x - p.size / 2, p.y - p.size / 2, Math.ceil(p.size), Math.ceil(p.size), p.color);
   }
-  ctx.globalAlpha = 1;
+  wctx.globalAlpha = 1;
 
   // power-ups (pulsing diamonds)
   for (const pu of powerups) {
@@ -823,16 +840,16 @@ function render() {
     const bob = Math.sin(pu.ph) * 2;
     const y = pu.y + bob;
     const blink = pu.ttl < 3 && Math.sin(t * 12) > 0 ? 0.3 : 1;
-    ctx.globalAlpha = blink;
+    wctx.globalAlpha = blink;
     glowCircle(pu.x, y, 16, pu.type === "shield" ? "rgba(255,215,0,0.3)" : "rgba(159,216,255,0.3)");
     const sz = 5 + Math.sin(pu.ph * 1.5);
-    ctx.fillStyle = c;
-    ctx.beginPath();
-    ctx.moveTo(pu.x, y - sz); ctx.lineTo(pu.x + sz, y);
-    ctx.lineTo(pu.x, y + sz); ctx.lineTo(pu.x - sz, y);
-    ctx.closePath(); ctx.fill();
+    wctx.fillStyle = c;
+    wctx.beginPath();
+    wctx.moveTo(pu.x, y - sz); wctx.lineTo(pu.x + sz, y);
+    wctx.lineTo(pu.x, y + sz); wctx.lineTo(pu.x - sz, y);
+    wctx.closePath(); wctx.fill();
     px(pu.x - 1, y - 1, 2, 2, "#ffffff");
-    ctx.globalAlpha = 1;
+    wctx.globalAlpha = 1;
   }
 
   // wisps
@@ -858,32 +875,32 @@ function render() {
       winding ? "rgba(255,74,106,0.5)" :
       hot ? "rgba(255,74,106,0.3)" : "rgba(177,74,237,0.28)");
     // jagged blob body — flashes white during a lunge windup so the attack is readable
-    ctx.fillStyle = frosted ? "#5b8fb0" :
+    wctx.fillStyle = frosted ? "#5b8fb0" :
       winding ? (Math.sin(t * 30) > 0 ? "#ffffff" : PAL.danger) :
       (hot && s.darting > 0 ? PAL.danger : PAL.shade);
-    ctx.beginPath();
+    wctx.beginPath();
     for (let i = 0; i < 8; i++) {
       const a = i / 8 * TAU + s.wob * 0.5;
       const rr = r * (0.75 + 0.3 * Math.sin(i * 3 + s.wob * 2)) * (winding ? 1.2 : 1);
       const xx = s.x + Math.cos(a) * rr, yy = s.y + Math.sin(a) * rr;
-      i === 0 ? ctx.moveTo(xx, yy) : ctx.lineTo(xx, yy);
+      i === 0 ? wctx.moveTo(xx, yy) : wctx.lineTo(xx, yy);
     }
-    ctx.closePath();
-    ctx.fill();
+    wctx.closePath();
+    wctx.fill();
     // dark core + eye
-    ctx.fillStyle = frosted ? "#2b4a63" : PAL.shadeDim;
-    ctx.beginPath(); ctx.arc(s.x, s.y, r * 0.55, 0, TAU); ctx.fill();
+    wctx.fillStyle = frosted ? "#2b4a63" : PAL.shadeDim;
+    wctx.beginPath(); wctx.arc(s.x, s.y, r * 0.55, 0, TAU); wctx.fill();
     const dx = player.x - s.x, dy = player.y - s.y, m = Math.hypot(dx, dy) || 1;
     px(s.x + dx / m * 2 - 1.5, s.y + dy / m * 2 - 1.5, 3, 3, hot ? PAL.danger : "#e9c6ff");
     // splitters get warning cracks
     if (s.type === "splitter") {
-      ctx.strokeStyle = "rgba(233,198,255,0.5)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(s.x - r * 0.4, s.y - r * 0.3);
-      ctx.lineTo(s.x + r * 0.1, s.y + r * 0.1);
-      ctx.lineTo(s.x + r * 0.4, s.y - r * 0.2);
-      ctx.stroke();
+      wctx.strokeStyle = "rgba(233,198,255,0.5)";
+      wctx.lineWidth = 1;
+      wctx.beginPath();
+      wctx.moveTo(s.x - r * 0.4, s.y - r * 0.3);
+      wctx.lineTo(s.x + r * 0.1, s.y + r * 0.1);
+      wctx.lineTo(s.x + r * 0.4, s.y - r * 0.2);
+      wctx.stroke();
     }
   }
 
@@ -893,11 +910,11 @@ function render() {
     for (let i = player.trail.length - 1; i >= 0; i--) {
       const tr = player.trail[i];
       const a = (1 - i / player.trail.length) * 0.6;
-      ctx.globalAlpha = a;
+      wctx.globalAlpha = a;
       const sz = Math.max(1, (player.r - 1) * (1 - i / player.trail.length));
       px(tr.x - sz / 2, tr.y - sz / 2, sz, sz, tr.dash ? PAL.emberCore : PAL.ember);
     }
-    ctx.globalAlpha = 1;
+    wctx.globalAlpha = 1;
 
     if (player.alive) {
       const blink = player.inv > 0 && Math.sin(t * 25) > 0;
@@ -916,26 +933,34 @@ function render() {
       }
       // shield ring
       if (player.shield) {
-        ctx.strokeStyle = PAL.gold;
-        ctx.globalAlpha = 0.7 + 0.3 * Math.sin(t * 6);
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
+        wctx.strokeStyle = PAL.gold;
+        wctx.globalAlpha = 0.7 + 0.3 * Math.sin(t * 6);
+        wctx.lineWidth = 1.5;
+        wctx.beginPath();
         const ra = t * 3;
         for (let i = 0; i <= 20; i++) {
           const a = i / 20 * TAU + ra;
           const rr = 11 + Math.sin(a * 5) * 1;
           const xx = player.x + Math.cos(a) * rr, yy = player.y + Math.sin(a) * rr;
-          i === 0 ? ctx.moveTo(xx, yy) : ctx.lineTo(xx, yy);
+          i === 0 ? wctx.moveTo(xx, yy) : wctx.lineTo(xx, yy);
         }
-        ctx.stroke();
-        ctx.globalAlpha = 1;
+        wctx.stroke();
+        wctx.globalAlpha = 1;
       }
     }
   }
 
-  ctx.restore();
+  wctx.restore();
 
-  /* --- UI --- */
+  /* ===== blit: nearest-neighbor upscale for the chunky pixel look ===== */
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(world, 0, 0, canvas.width, canvas.height);
+
+  /* ===== UI layer: native resolution so text stays legible ===== */
+  ctx.setTransform(viewScale, 0, 0, viewScale, 0, 0);
+  g = ctx;
+
   if (state === "play") {
     drawText(String(score).padStart(4, "0"), W / 2, 20, 18, PAL.text);
     if (combo > 1) {
