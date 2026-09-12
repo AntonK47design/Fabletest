@@ -62,6 +62,7 @@
 /* ============================================================
    EMBER DRIFT — a tiny indie arcade game
    You are a drifting ember. Collect wisps. Dodge the shades.
+   Descend through the Depths. Survive the surges.
    ============================================================ */
 
 const canvas = document.getElementById("game");
@@ -82,14 +83,32 @@ fitCanvas();
 
 /* ---------- palette ---------- */
 const PAL = {
-  bg0: "#0b0a14", bg1: "#141226", bg2: "#1d1a33",
   ember: "#ffb347", emberHot: "#ffe8b0", emberCore: "#fff6e0",
   wisp: "#7df9ff", wispDim: "#3fb8c9",
   shade: "#b14aed", shadeDim: "#5b2380",
   danger: "#ff4a6a",
   text: "#e8e0d0", textDim: "#9088a0",
-  gold: "#ffd700"
+  gold: "#ffd700", frost: "#9fd8ff"
 };
+
+/* ---------- zones (level design: the Depths) ---------- */
+const ZONES = [
+  { at: 0,   num: "I",   name: "EMBERWOOD",
+    bg: ["#0b0a14", "#141226", "#1d1a33"], hills: ["#16132a", "#1b1733"] },
+  { at: 20,  num: "II",  name: "THE HOLLOW",
+    bg: ["#0a0d18", "#101a2e", "#152640"], hills: ["#122038", "#17294c"] },
+  { at: 45,  num: "III", name: "VERDANT ASH",
+    bg: ["#0a120e", "#0f2018", "#143026"], hills: ["#0f2a1e", "#143a2a"] },
+  { at: 75,  num: "IV",  name: "CINDER MAW",
+    bg: ["#150a0a", "#271212", "#3b1818"], hills: ["#2b1414", "#3b1c18"] },
+  { at: 115, num: "V",   name: "THE VOID CHOIR",
+    bg: ["#0d0a18", "#1a1232", "#2b1b4d"], hills: ["#1f153a", "#2b1d52"] },
+];
+function zoneForScore(sc) {
+  let z = 0;
+  for (let i = 0; i < ZONES.length; i++) if (sc >= ZONES[i].at) z = i;
+  return z;
+}
 
 /* ---------- utils ---------- */
 const rnd  = (a, b) => a + Math.random() * (b - a);
@@ -98,6 +117,14 @@ const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const lerp = (a, b, t) => a + (b - a) * t;
 const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; };
 const TAU = Math.PI * 2;
+
+function hexToRgb(h) { return [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)]; }
+function rgbStr(c) { return `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`; }
+function lerpRgb(a, b, t) { return [lerp(a[0],b[0],t), lerp(a[1],b[1],t), lerp(a[2],b[2],t)]; }
+
+// live-blended zone colors (smoothly chase the current zone's palette)
+const curBg   = ZONES[0].bg.map(hexToRgb);
+const curHill = ZONES[0].hills.map(hexToRgb);
 
 /* ---------- audio (tiny chiptune synth) ---------- */
 let AC = null;
@@ -125,12 +152,15 @@ const sfx = {
   dash()    { beep(220, 0.15, "sawtooth", 0.05, -120); },
   hit()     { beep(110, 0.4, "sawtooth", 0.12, -70); beep(55, 0.5, "square", 0.1, -20); },
   start()   { beep(330, 0.1, "square", 0.05); setTimeout(() => beep(440, 0.1, "square", 0.05), 90); setTimeout(() => beep(660, 0.18, "square", 0.06), 180); },
-  near()    { beep(880, 0.05, "triangle", 0.025); }
+  near()    { beep(880, 0.05, "triangle", 0.025); },
+  zone()    { beep(392, 0.12, "square", 0.06); setTimeout(() => beep(523, 0.12, "square", 0.06), 110); setTimeout(() => beep(784, 0.25, "square", 0.07), 220); },
+  power()   { beep(660, 0.09, "triangle", 0.07, 300); setTimeout(() => beep(990, 0.15, "triangle", 0.06), 80); },
+  shieldPop() { beep(300, 0.3, "square", 0.09, -150); },
+  warn()    { beep(180, 0.22, "square", 0.07); setTimeout(() => beep(180, 0.22, "square", 0.07), 300); }
 };
 
-/* ---------- input ---------- */
+/* ---------- input: keyboard ---------- */
 const keys = {};
-let touchVec = null;
 window.addEventListener("keydown", e => {
   keys[e.code] = true;
   if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code)) e.preventDefault();
@@ -139,27 +169,59 @@ window.addEventListener("keydown", e => {
 });
 window.addEventListener("keyup", e => keys[e.code] = false);
 
-// touch: drag to steer, tap with second finger to dash
-let touchStart = null;
+/* ---------- input: touch (floating joystick + dash button) ---------- */
+let isTouch = false;                 // shows touch UI once a touch is seen
+let joy = null;                      // { id, bx, by, kx, ky } in canvas coords
+const JOY_R = 26;                    // joystick travel radius
+const dashBtn = { x: W - 38, y: H - 38, r: 22 };
+
+function canvasPos(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left) / r.width * W, y: (e.clientY - r.top) / r.height * H };
+}
+
 canvas.addEventListener("pointerdown", e => {
   audio();
+  if (e.pointerType === "touch") isTouch = true;
   if (state === "title" || state === "over") { tryStart("Space"); return; }
-  if (touchStart === null) {
-    touchStart = { id: e.pointerId, x: e.clientX, y: e.clientY };
+  const p = canvasPos(e);
+  // dash button (generous hit area)
+  if (dist2(p.x, p.y, dashBtn.x, dashBtn.y) < (dashBtn.r + 10) ** 2) {
+    wantDash = true;
+    return;
+  }
+  if (joy === null) {
+    // floating joystick spawns where the finger lands
+    joy = { id: e.pointerId, bx: p.x, by: p.y, kx: p.x, ky: p.y };
   } else {
+    // any second finger = dash
     wantDash = true;
   }
 });
 window.addEventListener("pointermove", e => {
-  if (touchStart && e.pointerId === touchStart.id) {
-    const dx = e.clientX - touchStart.x, dy = e.clientY - touchStart.y;
+  if (joy && e.pointerId === joy.id) {
+    const p = canvasPos(e);
+    const dx = p.x - joy.bx, dy = p.y - joy.by;
     const m = Math.hypot(dx, dy);
-    touchVec = m > 8 ? { x: dx / m, y: dy / m, m: clamp(m / 50, 0, 1) } : null;
+    if (m > JOY_R) {
+      // drag the base along so steering reversals feel instant
+      joy.bx = p.x - dx / m * JOY_R;
+      joy.by = p.y - dy / m * JOY_R;
+    }
+    joy.kx = p.x; joy.ky = p.y;
   }
 });
-window.addEventListener("pointerup", e => {
-  if (touchStart && e.pointerId === touchStart.id) { touchStart = null; touchVec = null; }
-});
+function endTouch(e) { if (joy && e.pointerId === joy.id) joy = null; }
+window.addEventListener("pointerup", endTouch);
+window.addEventListener("pointercancel", endTouch);
+
+function joyVec() {
+  if (!joy) return null;
+  const dx = joy.kx - joy.bx, dy = joy.ky - joy.by;
+  const m = Math.hypot(dx, dy);
+  if (m < 4) return { x: 0, y: 0, m: 0 };
+  return { x: dx / m, y: dy / m, m: clamp(m / JOY_R, 0, 1) };
+}
 
 /* ---------- game state ---------- */
 let state = "title";          // title | play | over
@@ -170,15 +232,22 @@ let shake = 0, flash = 0, slowmo = 0;
 let wantDash = false;
 let overTimer = 0;
 
+let zoneIdx = 0, zoneBanner = 0;   // banner countdown for zone announcements
+let frostT = 0;                    // frost power-up: shades slowed
+let surgeT = 40, surgeWarn = 0;    // surge event timers
+let puSpawnT = 14;                 // power-up spawn timer
+
 const player = {
   x: W / 2, y: H / 2, vx: 0, vy: 0,
   r: 5, angle: 0,
   dashCd: 0, dashT: 0, alive: true,
+  shield: false, inv: 0,
   trail: []
 };
 
 let wisps = [];     // collectibles
 let shades = [];    // enemies
+let powerups = [];  // shield / frost pickups
 let parts = [];     // particles
 let stars = [];     // background
 let embers = [];    // ambient floating motes
@@ -203,21 +272,53 @@ function spawnWisp() {
   wisps.push({ x, y, ph: rnd(0, TAU), r: 4, pulse: 0 });
 }
 
-function spawnShade() {
-  // spawn at edge, away from player
-  let x, y;
+function edgeSpawnPoint() {
   const side = rndi(0, 3);
-  if (side === 0) { x = -15; y = rnd(0, H); }
-  else if (side === 1) { x = W + 15; y = rnd(0, H); }
-  else if (side === 2) { x = rnd(0, W); y = -15; }
-  else { x = rnd(0, W); y = H + 15; }
+  if (side === 0) return { x: -15, y: rnd(0, H) };
+  if (side === 1) return { x: W + 15, y: rnd(0, H) };
+  if (side === 2) return { x: rnd(0, W), y: -15 };
+  return { x: rnd(0, W), y: H + 15 };
+}
+
+function spawnShade(forceType) {
+  const { x, y } = edgeSpawnPoint();
   const speed = rnd(0.75, 1.05) + Math.min(score * 0.006, 1.1);
-  shades.push({
-    x, y, vx: 0, vy: 0, speed,
+
+  // enemy pool widens as you descend through zones
+  let type = forceType;
+  if (!type) {
+    const pool = ["seeker", "seeker"];
+    if (zoneIdx >= 1) pool.push("darter");
+    if (zoneIdx >= 2) pool.push("orbiter");
+    if (zoneIdx >= 3) pool.push("splitter", "darter");
+    if (zoneIdx >= 4) pool.push("orbiter", "darter");
+    type = pool[rndi(0, pool.length - 1)];
+  }
+
+  const s = {
+    x, y, vx: 0, vy: 0, speed, type,
     r: rnd(6, 9), wob: rnd(0, TAU),
-    type: Math.random() < 0.3 && score > 5 ? "darter" : "seeker",
-    darting: 0, dartCd: rnd(1.5, 3)
-  });
+    darting: 0, dartCd: rnd(1.5, 3),
+    orbA: rnd(0, TAU), orbR: rnd(70, 100), orbDir: Math.random() < 0.5 ? 1 : -1,
+    small: false
+  };
+  if (type === "splitter") { s.r = rnd(11, 13); s.speed *= 0.65; }
+  shades.push(s);
+  return s;
+}
+
+function spawnSmallShade(x, y) {
+  const s = spawnShade("seeker");
+  s.x = x + rnd(-6, 6); s.y = y + rnd(-6, 6);
+  s.r = 4; s.speed *= 1.5; s.small = true;
+}
+
+function spawnPowerup() {
+  let x, y, tries = 0;
+  do { x = rnd(40, W - 40); y = rnd(40, H - 40); tries++; }
+  while (dist2(x, y, player.x, player.y) < 60 * 60 && tries < 20);
+  const type = Math.random() < 0.55 ? "shield" : "frost";
+  powerups.push({ x, y, type, ttl: 11, ph: rnd(0, TAU) });
 }
 
 function burst(x, y, color, n, spd, life) {
@@ -235,10 +336,14 @@ function reset() {
   player.vx = player.vy = 0;
   player.dashCd = 0; player.dashT = 0;
   player.alive = true;
+  player.shield = false; player.inv = 0;
   player.trail = [];
-  wisps = []; shades = []; parts = [];
+  wisps = []; shades = []; parts = []; powerups = [];
   score = 0; combo = 0; comboTimer = 0;
   shake = 0; flash = 0; slowmo = 0;
+  zoneIdx = 0; zoneBanner = 0;
+  frostT = 0; surgeT = rnd(35, 45); surgeWarn = 0; puSpawnT = rnd(12, 16);
+  joy = null;
   for (let i = 0; i < 4; i++) spawnWisp();
   shadeSpawnT = 1.5;
 }
@@ -252,7 +357,21 @@ function tryStart(code) {
   }
 }
 
-let shadeSpawnT = 3;
+let shadeSpawnT = 1.5;
+
+function addScore(n) {
+  score += n;
+  const z = zoneForScore(score);
+  if (z > zoneIdx) {
+    zoneIdx = z;
+    zoneBanner = 3;
+    sfx.zone();
+    flash = 0.4;
+    // reward the descent: a moment of calm + fresh wisps
+    slowmo = Math.max(slowmo, 0.5);
+    for (let i = 0; i < 2; i++) spawnWisp();
+  }
+}
 
 /* ---------- update ---------- */
 function update(dt) {
@@ -261,6 +380,21 @@ function update(dt) {
   if (flash > 0) flash = Math.max(0, flash - dt * 3);
   if (slowmo > 0) slowmo = Math.max(0, slowmo - dt);
   if (comboTimer > 0) { comboTimer -= dt; if (comboTimer <= 0) combo = 0; }
+  if (zoneBanner > 0) zoneBanner -= dt;
+  if (frostT > 0) frostT -= dt;
+  if (player.inv > 0) player.inv -= dt;
+
+  // blend palette toward current zone
+  const zc = ZONES[zoneIdx];
+  const bt = Math.min(dt * 1.2, 1);
+  for (let i = 0; i < 3; i++) {
+    const tgt = hexToRgb(zc.bg[i]);
+    curBg[i] = lerpRgb(curBg[i], tgt, bt);
+  }
+  for (let i = 0; i < 2; i++) {
+    const tgt = hexToRgb(zc.hills[i]);
+    curHill[i] = lerpRgb(curHill[i], tgt, bt);
+  }
 
   const ts = slowmo > 0 ? 0.35 : 1; // time scale
   const d = dt * ts;
@@ -293,7 +427,8 @@ function update(dt) {
   if (keys.ArrowRight || keys.KeyD) ax += 1;
   if (keys.ArrowUp    || keys.KeyW) ay -= 1;
   if (keys.ArrowDown  || keys.KeyS) ay += 1;
-  if (touchVec) { ax = touchVec.x * touchVec.m; ay = touchVec.y * touchVec.m; }
+  const jv = joyVec();
+  if (jv) { ax = jv.x * jv.m; ay = jv.y * jv.m; }
   const am = Math.hypot(ax, ay);
   if (am > 1) { ax /= am; ay /= am; }
 
@@ -309,8 +444,8 @@ function update(dt) {
   player.dashCd = Math.max(0, player.dashCd - dt);
   if (player.dashT > 0) player.dashT -= dt;
   if (wantDash && player.dashCd <= 0 && (am > 0.1 || v > 20)) {
-    const dxn = am > 0.1 ? ax : player.vx / v;
-    const dyn = am > 0.1 ? ay : player.vy / v;
+    const dxn = am > 0.1 ? ax / (am || 1) : player.vx / v;
+    const dyn = am > 0.1 ? ay / (am || 1) : player.vy / v;
     player.vx = dxn * 480; player.vy = dyn * 480;
     player.dashCd = 0.9; player.dashT = 0.16;
     burst(player.x, player.y, PAL.emberHot, 14, 3, 0.4);
@@ -358,13 +493,57 @@ function update(dt) {
       wisps.splice(i, 1);
       combo = Math.min(combo + 1, 8);
       comboTimer = 3;
-      score += combo;
       sfx.collect(combo);
       burst(wsp.x, wsp.y, PAL.wisp, 16, 2.6, 0.55);
       burst(wsp.x, wsp.y, "#ffffff", 5, 1.2, 0.3);
       shake = Math.max(shake, 1.5);
       spawnWisp();
       if (wisps.length < 3 + Math.floor(score / 18)) spawnWisp();
+      addScore(combo);
+    }
+  }
+
+  /* --- power-ups --- */
+  puSpawnT -= dt;
+  if (puSpawnT <= 0 && powerups.length < 2 && score >= 8) {
+    spawnPowerup();
+    puSpawnT = rnd(14, 20);
+  }
+  for (let i = powerups.length - 1; i >= 0; i--) {
+    const pu = powerups[i];
+    pu.ph += dt * 4;
+    pu.ttl -= dt;
+    if (pu.ttl <= 0) { powerups.splice(i, 1); continue; }
+    if (dist2(pu.x, pu.y, player.x, player.y) < (player.r + 8) ** 2) {
+      powerups.splice(i, 1);
+      sfx.power();
+      if (pu.type === "shield") {
+        player.shield = true;
+        burst(pu.x, pu.y, PAL.gold, 18, 2.5, 0.6);
+      } else {
+        frostT = 4.5;
+        burst(pu.x, pu.y, PAL.frost, 22, 3, 0.7);
+        flash = 0.25;
+      }
+    }
+  }
+
+  /* --- surge events (waves of pressure) --- */
+  if (score >= 12 && surgeWarn <= 0) {
+    surgeT -= dt;
+    if (surgeT <= 0) {
+      surgeWarn = 1.6;
+      sfx.warn();
+    }
+  }
+  if (surgeWarn > 0) {
+    surgeWarn -= dt;
+    if (surgeWarn <= 0) {
+      const n = 5 + zoneIdx;
+      for (let i = 0; i < n; i++) spawnShade();
+      for (let i = 0; i < 2; i++) spawnWisp();
+      shake = Math.max(shake, 4);
+      surgeT = rnd(32, 45);
     }
   }
 
@@ -376,14 +555,15 @@ function update(dt) {
     shadeSpawnT = rnd(0.7, 1.8);
   }
 
+  const fr = frostT > 0 ? 0.3 : 1; // frost slows all shades
   let nearDanger = false;
   for (const s of shades) {
-    s.wob += dt * 4;
+    s.wob += dt * 4 * fr;
     const dx = player.x - s.x, dy = player.y - s.y;
     const m = Math.hypot(dx, dy) || 1;
 
     if (s.type === "darter") {
-      s.dartCd -= dt;
+      s.dartCd -= dt * fr;
       if (s.dartCd <= 0 && m < 170) {
         s.darting = 0.45;
         s.dartCd = rnd(1.8, 3);
@@ -392,22 +572,46 @@ function update(dt) {
       }
       if (s.darting > 0) {
         s.darting -= dt;
-        s.x += s.dvx * d; s.y += s.dvy * d;
+        s.x += s.dvx * d * fr; s.y += s.dvy * d * fr;
       } else {
-        s.x += dx / m * s.speed * 35 * d;
-        s.y += dy / m * s.speed * 35 * d;
+        s.x += dx / m * s.speed * 35 * d * fr;
+        s.y += dy / m * s.speed * 35 * d * fr;
       }
+    } else if (s.type === "orbiter") {
+      // circles the player, slowly spiraling inward
+      s.orbA += dt * 1.7 * s.orbDir * fr;
+      s.orbR = Math.max(28, s.orbR - dt * 5 * fr);
+      const tx = player.x + Math.cos(s.orbA) * s.orbR;
+      const ty = player.y + Math.sin(s.orbA) * s.orbR;
+      const mm = Math.hypot(tx - s.x, ty - s.y) || 1;
+      const sp = s.speed * 90 * fr;
+      s.x += (tx - s.x) / mm * Math.min(sp * d, mm);
+      s.y += (ty - s.y) / mm * Math.min(sp * d, mm);
     } else {
-      // seeker with wobble
-      s.x += (dx / m * s.speed * 62 + Math.cos(s.wob) * 16) * d;
-      s.y += (dy / m * s.speed * 62 + Math.sin(s.wob * 1.3) * 16) * d;
+      // seeker / splitter: chase with wobble
+      const chase = s.type === "splitter" ? 55 : 62;
+      s.x += (dx / m * s.speed * chase + Math.cos(s.wob) * 16) * d * fr;
+      s.y += (dy / m * s.speed * chase + Math.sin(s.wob * 1.3) * 16) * d * fr;
     }
 
     // near-miss tension
     if (m < 30 && m > player.r + s.r + 2) nearDanger = true;
 
-    // collision (dash gives brief grace)
-    if (player.dashT <= 0 && dist2(s.x, s.y, player.x, player.y) < (player.r + s.r - 2) ** 2) {
+    // collision
+    if (player.dashT <= 0 && player.inv <= 0 &&
+        dist2(s.x, s.y, player.x, player.y) < (player.r + s.r - 2) ** 2) {
+      if (player.shield) {
+        // shield absorbs the hit and vaporizes the attacker
+        player.shield = false;
+        player.inv = 1.0;
+        burst(s.x, s.y, PAL.gold, 26, 3.5, 0.7);
+        shades.splice(shades.indexOf(s), 1);
+        shake = Math.max(shake, 6);
+        flash = 0.5;
+        slowmo = 0.3;
+        sfx.shieldPop();
+        break;
+      }
       die();
       break;
     }
@@ -416,11 +620,15 @@ function update(dt) {
       burst(s.x, s.y, PAL.shade, 24, 3.5, 0.7);
       burst(s.x, s.y, PAL.danger, 8, 2, 0.4);
       shades.splice(shades.indexOf(s), 1);
-      score += 3;
+      if (s.type === "splitter" && !s.small) {
+        spawnSmallShade(s.x, s.y);
+        spawnSmallShade(s.x, s.y);
+      }
       slowmo = 0.25;
       shake = Math.max(shake, 5);
       flash = 0.5;
       beep(700, 0.18, "square", 0.08, -300);
+      addScore(3);
       break;
     }
   }
@@ -434,6 +642,7 @@ function die() {
   shake = 12;
   flash = 1;
   slowmo = 1.2;
+  joy = null;
   sfx.hit();
   burst(player.x, player.y, PAL.ember, 40, 4.5, 1);
   burst(player.x, player.y, PAL.emberHot, 20, 3, 0.8);
@@ -472,11 +681,11 @@ function render() {
   ctx.save();
   if (shake > 0) ctx.translate(rnd(-shake, shake) * 0.5, rnd(-shake, shake) * 0.5);
 
-  // background gradient
+  // background gradient (zone-blended)
   const bg = ctx.createLinearGradient(0, 0, 0, H);
-  bg.addColorStop(0, PAL.bg0);
-  bg.addColorStop(0.6, PAL.bg1);
-  bg.addColorStop(1, PAL.bg2);
+  bg.addColorStop(0, rgbStr(curBg[0]));
+  bg.addColorStop(0.6, rgbStr(curBg[1]));
+  bg.addColorStop(1, rgbStr(curBg[2]));
   ctx.fillStyle = bg;
   ctx.fillRect(-10, -10, W + 20, H + 20);
 
@@ -488,8 +697,8 @@ function render() {
   }
   ctx.globalAlpha = 1;
 
-  // distant hills (parallax silhouettes)
-  ctx.fillStyle = "#16132a";
+  // distant hills (parallax silhouettes, zone-blended)
+  ctx.fillStyle = rgbStr(curHill[0]);
   ctx.beginPath();
   ctx.moveTo(0, H);
   for (let x = 0; x <= W; x += 8) {
@@ -497,7 +706,7 @@ function render() {
   }
   ctx.lineTo(W, H);
   ctx.fill();
-  ctx.fillStyle = "#1b1733";
+  ctx.fillStyle = rgbStr(curHill[1]);
   ctx.beginPath();
   ctx.moveTo(0, H);
   for (let x = 0; x <= W; x += 8) {
@@ -520,6 +729,24 @@ function render() {
   }
   ctx.globalAlpha = 1;
 
+  // power-ups (pulsing diamonds)
+  for (const pu of powerups) {
+    const c = pu.type === "shield" ? PAL.gold : PAL.frost;
+    const bob = Math.sin(pu.ph) * 2;
+    const y = pu.y + bob;
+    const blink = pu.ttl < 3 && Math.sin(t * 12) > 0 ? 0.3 : 1;
+    ctx.globalAlpha = blink;
+    glowCircle(pu.x, y, 16, pu.type === "shield" ? "rgba(255,215,0,0.3)" : "rgba(159,216,255,0.3)");
+    const sz = 5 + Math.sin(pu.ph * 1.5);
+    ctx.fillStyle = c;
+    ctx.beginPath();
+    ctx.moveTo(pu.x, y - sz); ctx.lineTo(pu.x + sz, y);
+    ctx.lineTo(pu.x, y + sz); ctx.lineTo(pu.x - sz, y);
+    ctx.closePath(); ctx.fill();
+    px(pu.x - 1, y - 1, 2, 2, "#ffffff");
+    ctx.globalAlpha = 1;
+  }
+
   // wisps
   for (const wsp of wisps) {
     const bob = Math.sin(wsp.ph) * 2;
@@ -536,9 +763,12 @@ function render() {
   for (const s of shades) {
     const r = s.r + Math.sin(s.wob * 2) * 1;
     const hot = s.type === "darter";
-    glowCircle(s.x, s.y, r * 2.6, hot ? "rgba(255,74,106,0.3)" : "rgba(177,74,237,0.28)");
+    const frosted = frostT > 0;
+    glowCircle(s.x, s.y, r * 2.6,
+      frosted ? "rgba(159,216,255,0.25)" :
+      hot ? "rgba(255,74,106,0.3)" : "rgba(177,74,237,0.28)");
     // jagged blob body
-    ctx.fillStyle = hot && s.darting > 0 ? PAL.danger : PAL.shade;
+    ctx.fillStyle = frosted ? "#5b8fb0" : (hot && s.darting > 0 ? PAL.danger : PAL.shade);
     ctx.beginPath();
     for (let i = 0; i < 8; i++) {
       const a = i / 8 * TAU + s.wob * 0.5;
@@ -549,10 +779,20 @@ function render() {
     ctx.closePath();
     ctx.fill();
     // dark core + eye
-    ctx.fillStyle = PAL.shadeDim;
+    ctx.fillStyle = frosted ? "#2b4a63" : PAL.shadeDim;
     ctx.beginPath(); ctx.arc(s.x, s.y, r * 0.55, 0, TAU); ctx.fill();
     const dx = player.x - s.x, dy = player.y - s.y, m = Math.hypot(dx, dy) || 1;
     px(s.x + dx / m * 2 - 1.5, s.y + dy / m * 2 - 1.5, 3, 3, hot ? PAL.danger : "#e9c6ff");
+    // splitters get warning cracks
+    if (s.type === "splitter") {
+      ctx.strokeStyle = "rgba(233,198,255,0.5)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(s.x - r * 0.4, s.y - r * 0.3);
+      ctx.lineTo(s.x + r * 0.1, s.y + r * 0.1);
+      ctx.lineTo(s.x + r * 0.4, s.y - r * 0.2);
+      ctx.stroke();
+    }
   }
 
   // player
@@ -568,17 +808,36 @@ function render() {
     ctx.globalAlpha = 1;
 
     if (player.alive) {
-      const dashGlow = player.dashT > 0 ? 1.8 : 1;
-      glowCircle(player.x, player.y, 18 * dashGlow, "rgba(255,179,71,0.45)");
-      // flame body (layered squares = pixel flame)
-      const fl = Math.sin(t * 14) * 1.2;
-      px(player.x - 4, player.y - 3 + fl * 0.3, 8, 7, PAL.ember);
-      px(player.x - 3, player.y - 4 + fl * 0.5, 6, 7, PAL.ember);
-      px(player.x - 2, player.y - 2, 4, 5, PAL.emberHot);
-      px(player.x - 1, player.y - 1, 2, 3, PAL.emberCore);
-      // little eyes
-      px(player.x - 2, player.y, 1, 2, "#3a2410");
-      px(player.x + 1, player.y, 1, 2, "#3a2410");
+      const blink = player.inv > 0 && Math.sin(t * 25) > 0;
+      if (!blink) {
+        const dashGlow = player.dashT > 0 ? 1.8 : 1;
+        glowCircle(player.x, player.y, 18 * dashGlow, "rgba(255,179,71,0.45)");
+        // flame body (layered squares = pixel flame)
+        const fl = Math.sin(t * 14) * 1.2;
+        px(player.x - 4, player.y - 3 + fl * 0.3, 8, 7, PAL.ember);
+        px(player.x - 3, player.y - 4 + fl * 0.5, 6, 7, PAL.ember);
+        px(player.x - 2, player.y - 2, 4, 5, PAL.emberHot);
+        px(player.x - 1, player.y - 1, 2, 3, PAL.emberCore);
+        // little eyes
+        px(player.x - 2, player.y, 1, 2, "#3a2410");
+        px(player.x + 1, player.y, 1, 2, "#3a2410");
+      }
+      // shield ring
+      if (player.shield) {
+        ctx.strokeStyle = PAL.gold;
+        ctx.globalAlpha = 0.7 + 0.3 * Math.sin(t * 6);
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        const ra = t * 3;
+        for (let i = 0; i <= 20; i++) {
+          const a = i / 20 * TAU + ra;
+          const rr = 11 + Math.sin(a * 5) * 1;
+          const xx = player.x + Math.cos(a) * rr, yy = player.y + Math.sin(a) * rr;
+          i === 0 ? ctx.moveTo(xx, yy) : ctx.lineTo(xx, yy);
+        }
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
     }
   }
 
@@ -591,11 +850,63 @@ function render() {
       const pulse = 1 + Math.sin(t * 10) * 0.08;
       drawText(`x${combo}`, W / 2 + 44, 18, Math.round(11 * pulse), PAL.gold);
     }
+    // depth marker
+    drawText(`DEPTH ${ZONES[zoneIdx].num}`, W - 12, 14, 9, PAL.textDim, "right");
     // dash cooldown bar
     const cdw = 50, pct = 1 - player.dashCd / 0.9;
     px(W / 2 - cdw / 2, 30, cdw, 3, "#2a2440");
     px(W / 2 - cdw / 2, 30, Math.round(cdw * pct), 3, pct >= 1 ? PAL.wisp : PAL.textDim);
-    if (pct >= 1) drawText("DASH READY", W / 2, 41, 7, PAL.wispDim);
+    if (pct >= 1 && !isTouch) drawText("DASH READY", W / 2, 41, 7, PAL.wispDim);
+
+    // frost timer
+    if (frostT > 0) drawText(`❄ ${frostT.toFixed(1)}`, 12, 14, 9, PAL.frost, "left");
+
+    // surge warning
+    if (surgeWarn > 0 && Math.sin(t * 14) > -0.2) {
+      drawText("⚠ SURGE INCOMING ⚠", W / 2, 56, 13, PAL.danger);
+    }
+
+    // zone banner
+    if (zoneBanner > 0) {
+      const a = clamp(zoneBanner > 2.5 ? (3 - zoneBanner) * 2 : zoneBanner / 2.5, 0, 1);
+      ctx.globalAlpha = a;
+      drawText(`— DEPTH ${ZONES[zoneIdx].num} —`, W / 2, H / 2 - 34, 12, PAL.textDim);
+      drawText(ZONES[zoneIdx].name, W / 2, H / 2 - 16, 20, PAL.text);
+      ctx.globalAlpha = 1;
+    }
+
+    /* touch UI */
+    if (isTouch) {
+      // floating joystick
+      if (joy) {
+        ctx.globalAlpha = 0.25;
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(joy.bx, joy.by, JOY_R, 0, TAU); ctx.stroke();
+        ctx.globalAlpha = 0.5;
+        const dx = joy.kx - joy.bx, dy = joy.ky - joy.by;
+        const m = Math.hypot(dx, dy);
+        const kx = m > JOY_R ? joy.bx + dx / m * JOY_R : joy.kx;
+        const ky = m > JOY_R ? joy.by + dy / m * JOY_R : joy.ky;
+        ctx.fillStyle = PAL.ember;
+        ctx.beginPath(); ctx.arc(kx, ky, 9, 0, TAU); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      // dash button with cooldown sweep
+      const pct2 = 1 - player.dashCd / 0.9;
+      ctx.globalAlpha = 0.35;
+      ctx.fillStyle = "#1a1730";
+      ctx.beginPath(); ctx.arc(dashBtn.x, dashBtn.y, dashBtn.r, 0, TAU); ctx.fill();
+      ctx.globalAlpha = pct2 >= 1 ? 0.85 : 0.4;
+      ctx.strokeStyle = pct2 >= 1 ? PAL.wisp : PAL.textDim;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(dashBtn.x, dashBtn.y, dashBtn.r - 2, -Math.PI / 2, -Math.PI / 2 + TAU * pct2);
+      ctx.stroke();
+      ctx.globalAlpha = pct2 >= 1 ? 0.95 : 0.5;
+      drawText("DASH", dashBtn.x, dashBtn.y, 8, pct2 >= 1 ? PAL.wisp : PAL.textDim);
+      ctx.globalAlpha = 1;
+    }
   }
 
   if (state === "title") {
@@ -606,25 +917,30 @@ function render() {
     ctx.globalAlpha = 1;
     glowCircle(W / 2, 104 + bob, 110, "rgba(255,140,50,0.07)");
     drawText("collect the wisps  ·  dodge the shades", W / 2, 168, 10, PAL.textDim);
-    drawText("dash through shades to destroy them", W / 2, 182, 10, PAL.textDim);
+    drawText("dash through shades  ·  descend the depths", W / 2, 182, 10, PAL.textDim);
     if (Math.sin(t * 4) > -0.3) drawText("— press any key or tap to begin —", W / 2, 215, 11, PAL.text);
-    drawText("WASD / arrows to move   ·   SPACE to dash", W / 2, 248, 9, PAL.textDim);
+    if (isTouch) {
+      drawText("touch & drag to steer   ·   DASH button or 2nd finger", W / 2, 248, 9, PAL.textDim);
+    } else {
+      drawText("WASD / arrows to move   ·   SPACE to dash", W / 2, 248, 9, PAL.textDim);
+    }
     if (best > 0) drawText(`best ${best}`, W / 2, 268, 9, PAL.gold);
   }
 
   if (state === "over") {
     ctx.fillStyle = "rgba(8,6,16,0.55)";
     ctx.fillRect(0, 0, W, H);
-    drawText("THE EMBER FADES", W / 2, 100, 22, PAL.danger);
-    drawText(`score  ${score}`, W / 2, 138, 14, PAL.text);
+    drawText("THE EMBER FADES", W / 2, 96, 22, PAL.danger);
+    drawText(`score  ${score}`, W / 2, 132, 14, PAL.text);
+    drawText(`reached depth ${ZONES[zoneIdx].num} · ${ZONES[zoneIdx].name}`, W / 2, 152, 9, PAL.textDim);
     if (score >= best && score > 0) {
       const pulse = 1 + Math.sin(t * 8) * 0.1;
-      drawText("★ NEW BEST ★", W / 2, 160, Math.round(12 * pulse), PAL.gold);
+      drawText("★ NEW BEST ★", W / 2, 172, Math.round(12 * pulse), PAL.gold);
     } else {
-      drawText(`best  ${best}`, W / 2, 160, 11, PAL.textDim);
+      drawText(`best  ${best}`, W / 2, 172, 11, PAL.textDim);
     }
     if (overTimer > 0.8 && Math.sin(t * 4) > -0.3) {
-      drawText("— press any key to rekindle —", W / 2, 200, 11, PAL.text);
+      drawText("— press any key or tap to rekindle —", W / 2, 208, 11, PAL.text);
     }
   }
 
