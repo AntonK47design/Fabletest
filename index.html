@@ -152,8 +152,12 @@ function lerpRgb(a, b, t) { return [lerp(a[0],b[0],t), lerp(a[1],b[1],t), lerp(a
 const curBg   = ZONES[0].bg.map(hexToRgb);
 const curHill = ZONES[0].hills.map(hexToRgb);
 
-/* ---------- audio (tiny chiptune synth, no external assets) ---------- */
-let AC = null;
+/* ---------- audio (tiny chiptune synth, no external assets) ----------
+   Browsers keep an AudioContext suspended until a real user gesture.
+   Chrome forgives a late unlock via sticky activation; Safari does not,
+   so the context is created/resumed from EVERY gesture type, in the
+   capture phase, at window level — nothing can swallow the unlock. */
+let AC = null, muted = false;
 function audio() {
   try {
     if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
@@ -161,10 +165,18 @@ function audio() {
   } catch (e) {}
   return AC;
 }
+for (const ev of ["pointerdown", "touchstart", "mousedown", "keydown", "click"]) {
+  window.addEventListener(ev, audio, { capture: true, passive: true });
+}
+// a backgrounded tab/iframe suspends the context; resume when it returns
+document.addEventListener("visibilitychange", () => { if (!document.hidden) audio(); });
+window.addEventListener("focus", audio);
+
 function beep(freq, dur, type = "square", vol = 0.08, slide = 0) {
+  if (muted) return;
   try {
     const ac = audio();
-    if (!ac) return;
+    if (!ac || ac.state !== "running") return;
     const o = ac.createOscillator(), g2 = ac.createGain();
     o.type = type;
     o.frequency.setValueAtTime(freq, ac.currentTime);
@@ -204,6 +216,7 @@ window.addEventListener("keydown", e => {
   keys[e.code] = true;
   if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code)) e.preventDefault();
   firstInput();
+  if (e.code === "KeyM") { muted = !muted; if (!muted) sfx.collect(1); return; }
   if (state === "over") { tryRestart(); return; }
   if (e.code === "Space") wantDash = true;
 });
@@ -216,6 +229,7 @@ const JOY_R = 28;                    // joystick travel radius
 const JOY_DEAD = 6;                  // dead zone so a resting thumb doesn't drift
 const DASH_R = 28;                   // thumb-sized dash button
 function dashBtnPos() { return { x: W - DASH_R - 16, y: H - DASH_R - 14 }; }
+const SPK = { x: 18, y: 17, r: 13 };   // mute toggle, top-left
 
 function canvasPos(e) {
   const r = canvas.getBoundingClientRect();
@@ -225,8 +239,14 @@ function canvasPos(e) {
 canvas.addEventListener("pointerdown", e => {
   if (e.pointerType === "touch") isTouch = true;
   firstInput();
-  if (state === "over") { tryRestart(); return; }
   const p = canvasPos(e);
+  // speaker toggle first, so it works on every screen including game over
+  if (dist2(p.x, p.y, SPK.x, SPK.y) < SPK.r * SPK.r) {
+    muted = !muted;
+    if (!muted) sfx.collect(1);
+    return;
+  }
+  if (state === "over") { tryRestart(); return; }
   const db = dashBtnPos();
   // dash button (generous hit area beyond the visual)
   if (dist2(p.x, p.y, db.x, db.y) < (DASH_R + 12) ** 2) {
@@ -1006,7 +1026,7 @@ function render() {
     px(W / 2 - cdw / 2, 32, Math.round(cdw * pct), 3, pct >= 1 ? PAL.wisp : PAL.textDim);
 
     // frost timer
-    if (frostT > 0) drawText(`frost ${frostT.toFixed(1)}`, 14, 16, 10, PAL.frost, "left");
+    if (frostT > 0) drawText(`frost ${frostT.toFixed(1)}`, 36, 17, 10, PAL.frost, "left");
 
     // surge warning
     if (surgeWarn > 0 && Math.sin(t * 14) > -0.2) {
@@ -1070,6 +1090,23 @@ function render() {
       drawText("DASH", db.x, db.y, 10, pct2 >= 1 ? PAL.wisp : PAL.textDim);
       ctx.globalAlpha = 1;
     }
+  }
+
+  // speaker / mute toggle — always visible so audio state is never a mystery
+  {
+    const c = muted ? PAL.textDim : PAL.text;
+    const x = SPK.x, y = SPK.y;
+    wctx.globalAlpha = 0.75;
+    px(x - 6, y - 2, 2, 4, c);
+    px(x - 4, y - 4, 2, 8, c);
+    px(x - 2, y - 6, 2, 12, c);
+    if (muted) {
+      for (let i = 0; i < 5; i++) { px(x + 2 + i, y - 4 + i, 1, 1, c); px(x + 6 - i, y - 4 + i, 1, 1, c); }
+    } else {
+      px(x + 2, y - 3, 1, 6, c);
+      px(x + 5, y - 5, 1, 10, c);
+    }
+    wctx.globalAlpha = 1;
   }
 
   // the original title, now a fading overlay rather than a gate —
