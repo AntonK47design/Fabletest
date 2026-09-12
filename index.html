@@ -669,15 +669,32 @@ function update(dt) {
         s.y += dy / m * s.speed * 35 * d * fr;
       }
     } else if (s.type === "orbiter") {
-      // circles the player, slowly spiraling inward
-      s.orbA += dt * 1.7 * s.orbDir * fr;
-      s.orbR = Math.max(30, s.orbR - dt * 4.5 * fr);
-      const tx = player.x + Math.cos(s.orbA) * s.orbR;
-      const ty = player.y + Math.sin(s.orbA) * s.orbR;
-      const mm = Math.hypot(tx - s.x, ty - s.y) || 1;
-      const sp = s.speed * 85 * fr;
-      s.x += (tx - s.x) / mm * Math.min(sp * d, mm);
-      s.y += (ty - s.y) / mm * Math.min(sp * d, mm);
+      if (s.windup > 0) {
+        // telegraphed collapse: freeze and flash, direction locked at windup start
+        s.windup -= dt * fr;
+        if (s.windup <= 0) s.darting = 0.5;
+      } else if (s.darting > 0) {
+        // collapse straight through where the player was
+        s.darting -= dt;
+        s.x += s.dvx * d * fr; s.y += s.dvy * d * fr;
+        if (s.darting <= 0) s.orbR = rnd(70, 100); // retreat to a wide orbit
+      } else {
+        // circle the player, spiraling inward
+        s.orbA += dt * 1.7 * s.orbDir * fr;
+        s.orbR = Math.max(30, s.orbR - dt * 9 * fr);
+        const tx = player.x + Math.cos(s.orbA) * s.orbR;
+        const ty = player.y + Math.sin(s.orbA) * s.orbR;
+        const mm = Math.hypot(tx - s.x, ty - s.y) || 1;
+        const sp = s.speed * 85 * fr;
+        s.x += (tx - s.x) / mm * Math.min(sp * d, mm);
+        s.y += (ty - s.y) / mm * Math.min(sp * d, mm);
+        // once the orbit is tight, strike
+        if (s.orbR <= 30.5 && m < 130) {
+          s.windup = 0.4;
+          s.dvx = dx / m * 280; s.dvy = dy / m * 280;
+          burst(s.x, s.y, PAL.shade, 8, 2, 0.4);
+        }
+      }
     } else {
       // seeker / splitter: chase with wobble
       const chase = s.type === "splitter" ? 48 : 58;
@@ -868,16 +885,16 @@ function render() {
   for (const s of shades) {
     const r = s.r + Math.sin(s.wob * 2) * 1;
     const hot = s.type === "darter";
-    const winding = hot && s.windup > 0;
+    const winding = s.windup > 0;
     const frosted = frostT > 0;
     glowCircle(s.x, s.y, r * 2.6,
       frosted ? "rgba(159,216,255,0.25)" :
       winding ? "rgba(255,74,106,0.5)" :
       hot ? "rgba(255,74,106,0.3)" : "rgba(177,74,237,0.28)");
-    // jagged blob body — flashes white during a lunge windup so the attack is readable
+    // jagged blob body — flashes white during an attack windup so it's readable
     wctx.fillStyle = frosted ? "#5b8fb0" :
       winding ? (Math.sin(t * 30) > 0 ? "#ffffff" : PAL.danger) :
-      (hot && s.darting > 0 ? PAL.danger : PAL.shade);
+      (s.darting > 0 ? PAL.danger : PAL.shade);
     wctx.beginPath();
     for (let i = 0; i < 8; i++) {
       const a = i / 8 * TAU + s.wob * 0.5;
