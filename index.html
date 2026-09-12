@@ -40,6 +40,9 @@
 </style>
 </head>
 <body>
+<!-- CrazyGames SDK. Optional by design: every call is guarded, so the game
+     still runs standalone (itch, GitHub Pages, local file) if this 404s. -->
+<script src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>
 <canvas id="game"></canvas>
 <div id="crt"></div>
 <div id="vignette"></div>
@@ -64,7 +67,39 @@ const world = document.createElement("canvas");
 const wctx = world.getContext("2d");
 let g = wctx;   // current draw target for the shared helpers
 
-/* ---------- safe storage (cross-origin iframes block localStorage) ---------- */
+/* ---------- CrazyGames SDK (optional) ----------
+   Every entry point is guarded and try/caught, so an absent or failed SDK
+   degrades to plain localStorage instead of breaking the game. */
+const CG = (() => {
+  let sdk = null, ready = false;
+  return {
+    get ready() { return ready; },
+    async init() {
+      try {
+        if (window.CrazyGames && window.CrazyGames.SDK) {
+          sdk = window.CrazyGames.SDK;
+          await sdk.init();          // preloads saved data; must finish before data.get
+          ready = true;
+        }
+      } catch (e) { sdk = null; ready = false; }
+      return ready;
+    },
+    data: {
+      get(k) { try { if (ready) { const v = sdk.data.getItem(k); return v === undefined ? null : v; } } catch (e) {} return null; },
+      set(k, v) { try { if (ready) { sdk.data.setItem(k, String(v)); return true; } } catch (e) {} return false; }
+    },
+    loadingStart()  { try { if (ready) sdk.game.loadingStart(); }  catch (e) {} },
+    loadingStop()   { try { if (ready) sdk.game.loadingStop(); }   catch (e) {} },
+    gameplayStart() { try { if (ready) sdk.game.gameplayStart(); } catch (e) {} },
+    gameplayStop()  { try { if (ready) sdk.game.gameplayStop(); }  catch (e) {} },
+    happytime()     { try { if (ready) sdk.game.happytime(); }     catch (e) {} }
+  };
+})();
+
+/* ---------- safe storage ----------
+   Order matters: CrazyGames cloud save first, because a cross-origin iframe
+   blocks localStorage outright on Safari and the high score would vanish.
+   localStorage is the off-platform path; memory is the last resort. */
 const store = (() => {
   const mem = {};
   let ok = false;
@@ -75,11 +110,14 @@ const store = (() => {
   } catch (e) { ok = false; }
   return {
     get(k, dflt) {
+      const cloud = CG.data.get(k);
+      if (cloud !== null) return cloud;
       if (ok) { try { const v = localStorage.getItem(k); if (v !== null) return v; } catch (e) {} }
       return (k in mem) ? mem[k] : dflt;
     },
     set(k, v) {
       mem[k] = String(v);
+      CG.data.set(k, v);
       if (ok) { try { localStorage.setItem(k, String(v)); } catch (e) {} }
     }
   };
@@ -158,6 +196,12 @@ const curHill = ZONES[0].hills.map(hexToRgb);
    so the context is created/resumed from EVERY gesture type, in the
    capture phase, at window level — nothing can swallow the unlock. */
 let AC = null, muted = false;
+/* CrazyGames requires platform mute to take priority over the in-game
+   toggle, so audio plays only when BOTH are unmuted. Flipping the in-game
+   speaker can never re-enable sound while the platform has muted us. */
+let sdkMuted = false;
+function audioMuted() { return muted || sdkMuted; }
+window.emberDriftSetMute = v => { sdkMuted = !!v; };
 function audio() {
   try {
     if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
@@ -173,7 +217,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) audi
 window.addEventListener("focus", audio);
 
 function beep(freq, dur, type = "square", vol = 0.08, slide = 0) {
-  if (muted) return;
+  if (audioMuted()) return;
   try {
     const ac = audio();
     if (!ac || ac.state !== "running") return;
@@ -445,6 +489,7 @@ function tryRestart() {
   reset();
   state = "play";
   sfx.start();
+  CG.gameplayStart();
 }
 
 let shadeSpawnT = 0;
@@ -787,7 +832,9 @@ function die() {
   if (score > best) {
     best = score;
     store.set("emberdrift_best", best);
+    CG.happytime();            // a genuine celebratory moment
   }
+  CG.gameplayStop();
 }
 
 /* ---------- render helpers (draw into whatever `g` targets) ---------- */
@@ -1094,13 +1141,13 @@ function render() {
 
   // speaker / mute toggle — always visible so audio state is never a mystery
   {
-    const c = muted ? PAL.textDim : PAL.text;
+    const c = audioMuted() ? PAL.textDim : PAL.text;
     const x = SPK.x, y = SPK.y;
     wctx.globalAlpha = 0.75;
     px(x - 6, y - 2, 2, 4, c);
     px(x - 4, y - 4, 2, 8, c);
     px(x - 2, y - 6, 2, 12, c);
-    if (muted) {
+    if (audioMuted()) {
       for (let i = 0; i < 5; i++) { px(x + 2 + i, y - 4 + i, 1, 1, c); px(x + 6 - i, y - 4 + i, 1, 1, c); }
     } else {
       px(x + 2, y - 3, 1, 6, c);
@@ -1177,6 +1224,23 @@ function render() {
 /* ---------- main loop ---------- */
 fitCanvas();
 reset();
+
+/* SDK boot runs in parallel with gameplay. Blocking the first frame on a
+   network round-trip would directly hurt the conversion-to-gameplay metric,
+   so the game is already playable while this resolves. */
+(async () => {
+  const ok = await CG.init();
+  // SDK init is this game's only load phase (there are no assets to fetch),
+  // and neither call registers before init resolves, so they are paired here.
+  CG.loadingStart();
+  CG.loadingStop();
+  if (ok) {
+    const cloudBest = +store.get("emberdrift_best", "0") || 0;
+    if (cloudBest > best) best = cloudBest;
+    if (store.get("emberdrift_tut", "0") === "1" && tutStage < 3) tutStage = 3;
+  }
+  CG.gameplayStart();
+})();
 
 let last = performance.now();
 function loop(now) {
