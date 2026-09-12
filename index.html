@@ -228,6 +228,7 @@ const curHill = ZONES[0].hills.map(hexToRgb);
    so the context is created/resumed from EVERY gesture type, in the
    capture phase, at window level — nothing can swallow the unlock. */
 let AC = null, muted = false, audioReady = false;
+let gestureCount = 0, beepTries = 0;   // nur fuer die Ton-Diagnose
 /* CrazyGames requires platform mute to take priority over the in-game
    toggle, so audio plays only when BOTH are unmuted. Flipping the in-game
    speaker can never re-enable sound while the platform has muted us. */
@@ -248,8 +249,9 @@ function audio() {
   } catch (e) {}
   return AC;
 }
+function onGesture() { gestureCount++; audio(); }
 for (const ev of ["pointerdown", "touchstart", "touchend", "mousedown", "keydown", "click"]) {
-  window.addEventListener(ev, audio, { capture: true, passive: true });
+  window.addEventListener(ev, onGesture, { capture: true, passive: true });
 }
 // iOS drops the context to "interrupted" when backgrounded or on a phone call.
 // visibilitychange alone cannot revive it — WebKit needs a real gesture — so the
@@ -259,6 +261,7 @@ window.addEventListener("focus", audio);
 
 function beep(freq, dur, type = "square", vol = 0.08, slide = 0) {
   if (audioMuted()) return;
+  beepTries++;
   const ac = audio();
   if (!ac) return;
   const emit = () => {
@@ -1247,8 +1250,15 @@ function render() {
   /* If the context still is not running after a few seconds of play, the
      embedder never handed this document a user activation. Say so and give a
      target to tap — a direct tap inside the frame is what unblocks it. */
-  if (!audioReady && !muted && runT > 3 && Math.sin(t * 3) > -0.5) {
-    drawText("tap for sound", SPK.x + 14, SPK.y, 9, PAL.textDim, "left");
+  if (!audioReady && runT > 3) {
+    if (Math.sin(t * 3) > -0.5) {
+      drawText("tap here for sound", SPK.x + 14, SPK.y - 3, 9, PAL.gold, "left");
+    }
+    // one compact line that says WHY, so a silent embed can be diagnosed
+    // from a screenshot instead of guesswork
+    const st = AC ? AC.state : "none";
+    drawText(`ctx=${st} gest=${gestureCount} snd=${beepTries} mute=${muted ? 1 : 0}/${sdkMuted ? 1 : 0} sdk=${CG.ready ? 1 : 0}`,
+             SPK.x + 14, SPK.y + 8, 7, PAL.textDim, "left");
   }
 
   // speaker / mute toggle — always visible so audio state is never a mystery
