@@ -227,7 +227,7 @@ const curHill = ZONES[0].hills.map(hexToRgb);
    Chrome forgives a late unlock via sticky activation; Safari does not,
    so the context is created/resumed from EVERY gesture type, in the
    capture phase, at window level — nothing can swallow the unlock. */
-let AC = null, muted = false;
+let AC = null, muted = false, audioReady = false;
 /* CrazyGames requires platform mute to take priority over the in-game
    toggle, so audio plays only when BOTH are unmuted. Flipping the in-game
    speaker can never re-enable sound while the platform has muted us. */
@@ -244,6 +244,7 @@ function audio() {
   try {
     if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
     if (AC.state === "suspended" || AC.state === "interrupted") AC.resume();
+    if (AC.state === "running") audioReady = true;
   } catch (e) {}
   return AC;
 }
@@ -258,19 +259,26 @@ window.addEventListener("focus", audio);
 
 function beep(freq, dur, type = "square", vol = 0.08, slide = 0) {
   if (audioMuted()) return;
-  try {
-    const ac = audio();
-    if (!ac || ac.state !== "running") return;
-    const o = ac.createOscillator(), g2 = ac.createGain();
-    o.type = type;
-    o.frequency.setValueAtTime(freq, ac.currentTime);
-    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), ac.currentTime + dur);
-    g2.gain.setValueAtTime(vol, ac.currentTime);
-    g2.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + dur);
-    o.connect(g2).connect(ac.destination);
-    o.start();
-    o.stop(ac.currentTime + dur);
-  } catch (e) { /* audio blocked until interaction */ }
+  const ac = audio();
+  if (!ac) return;
+  const emit = () => {
+    try {
+      const o = ac.createOscillator(), g2 = ac.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(freq, ac.currentTime);
+      if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), ac.currentTime + dur);
+      g2.gain.setValueAtTime(vol, ac.currentTime);
+      g2.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + dur);
+      o.connect(g2).connect(ac.destination);
+      o.start();
+      o.stop(ac.currentTime + dur);
+    } catch (e) {}
+  };
+  if (ac.state === "running") { emit(); return; }
+  /* Not running yet. Rather than dropping the sound outright, push one resume
+     and emit if it lands — an embedded game may only get its activation late. */
+  try { ac.resume().then(() => { if (ac.state === "running") { audioReady = true; emit(); } }).catch(() => {}); }
+  catch (e) {}
 }
 const sfx = {
   collect(combo) { beep(520 + combo * 60, 0.12, "square", 0.06, 200); },
@@ -1234,6 +1242,13 @@ function render() {
       drawText("DASH", db.x, db.y, 10, pct2 >= 1 ? PAL.wisp : PAL.textDim);
       ctx.globalAlpha = 1;
     }
+  }
+
+  /* If the context still is not running after a few seconds of play, the
+     embedder never handed this document a user activation. Say so and give a
+     target to tap — a direct tap inside the frame is what unblocks it. */
+  if (!audioReady && !muted && runT > 3 && Math.sin(t * 3) > -0.5) {
+    drawText("tap for sound", SPK.x + 14, SPK.y, 9, PAL.textDim, "left");
   }
 
   // speaker / mute toggle — always visible so audio state is never a mystery
