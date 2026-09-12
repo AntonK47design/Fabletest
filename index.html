@@ -91,6 +91,34 @@ const CG = (() => {
       get(k) { try { if (ready) { const v = sdk.data.getItem(k); return v === undefined ? null : v; } } catch (e) {} return null; },
       set(k, v) { try { if (ready) { sdk.data.setItem(k, String(v)); return true; } } catch (e) {} return false; }
     },
+    /* Midgame ad. The SDK enforces its own frequency cap (max 1 per 3 min,
+       accounting for session start), so per their docs we may request at any
+       opportune moment and early requests are simply ignored. onDone always
+       fires exactly once, including when the SDK is absent or misbehaving,
+       so the game can never be left stuck behind an ad that never resolves. */
+    requestMidgameAd(onDone) {
+      let settled = false;
+      const finish = () => { if (settled) return; settled = true; onAdEnd(); onDone(); };
+      if (!ready) { onDone(); return; }
+      /* Two guards, because the two failure modes need different patience.
+         Before adStarted we are only waiting on an auction, so 8s is generous.
+         After adStarted a real ad is on screen and may run 30s+ — cutting that
+         short would unmute the game over a playing ad, which their ad
+         requirements forbid — so it gets a much longer last-resort guard. */
+      let guard = setTimeout(finish, 8000);
+      const done = () => { clearTimeout(guard); finish(); };
+      try {
+        sdk.ad.requestAd("midgame", {
+          adStarted: () => {                      // mute + pause, per their requirements
+            onAdStart();
+            clearTimeout(guard);
+            guard = setTimeout(finish, 60000);
+          },
+          adFinished: () => done(),
+          adError:    () => done()                // unfilled / adblock / disabled in Basic Launch
+        });
+      } catch (e) { done(); }
+    },
     loadingStart()  { try { if (ready) sdk.game.loadingStart(); }  catch (e) {} },
     loadingStop()   { try { if (ready) sdk.game.loadingStop(); }   catch (e) {} },
     gameplayStart() { try { if (ready) sdk.game.gameplayStart(); } catch (e) {} },
@@ -203,7 +231,13 @@ let AC = null, muted = false;
    toggle, so audio plays only when BOTH are unmuted. Flipping the in-game
    speaker can never re-enable sound while the platform has muted us. */
 let sdkMuted = false;
+let adBusy = false;          // true from ad request until adFinished/adError
 function audioMuted() { return muted || sdkMuted; }
+/* Their ad requirements: mute and pause when the ad actually STARTS (not when
+   requested — muting on an unfilled request is a silent glitch to the player),
+   and unmute when it finishes or errors. */
+function onAdStart() { sdkMuted = true; }
+function onAdEnd()   { sdkMuted = false; adBusy = false; }
 window.emberDriftSetMute = v => { sdkMuted = !!v; };
 function audio() {
   try {
@@ -491,6 +525,7 @@ function reset() {
 }
 
 function tryRestart() {
+  if (adBusy) return;          // no progressing the game while an ad is in flight
   if (overTimer < 0.8) return; // prevent accidental restart
   reset();
   state = "play";
@@ -850,6 +885,12 @@ function die() {
     CG.happytime();            // a genuine celebratory moment
   }
   CG.gameplayStop();
+  // a death is a level-transition equivalent: the moment their docs name as
+  // appropriate for a midgame ad, and never mid-gameplay
+  if (CG.ready) {
+    adBusy = true;
+    CG.requestMidgameAd(() => {});
+  }
 }
 
 /* ---------- render helpers (draw into whatever `g` targets) ---------- */
@@ -1218,7 +1259,10 @@ function render() {
     } else if (best > 0) {
       drawText(`best  ${best}`, W / 2, 196, 11, PAL.textDim);
     }
-    if (overTimer > 0.8 && Math.sin(t * 4) > -0.3) {
+    if (adBusy) {
+      const dots = ".".repeat(1 + (Math.floor(t * 2) % 3));
+      drawText(dots, W / 2, 226, 12, PAL.textDim);
+    } else if (overTimer > 0.8 && Math.sin(t * 4) > -0.3) {
       drawText(isTouch ? "— tap to rekindle —" : "— press any key to rekindle —", W / 2, 226, 12, PAL.text);
     }
   }
