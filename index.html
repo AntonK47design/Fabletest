@@ -204,6 +204,15 @@ const ZONES = [
   { at: 240, num: "V",   name: "THE VOID CHOIR",
     rule: "the choir sings — surges quicken",
     bg: ["#0d0a18", "#1a1232", "#2b1b4d"], hills: ["#1f153a", "#2b1d52"] },
+  { at: 325, num: "VI",  name: "THE STARVING DARK",
+    rule: "the wisps flee your touch",
+    bg: ["#08110f", "#0d1f1c", "#12302c"], hills: ["#0d2422", "#12332f"] },
+  { at: 420, num: "VII", name: "THE BLIND DEEP",
+    rule: "you see only what is close",
+    bg: ["#05060d", "#090c1a", "#0e1228"], hills: ["#0a0f22", "#0d1430"] },
+  { at: 525, num: "VIII", name: "THE SHATTERING",
+    rule: "everything you break breaks again",
+    bg: ["#120608", "#240a12", "#38101c"], hills: ["#2a0c14", "#3a1220"] },
 ];
 
 /* ---------- utils ---------- */
@@ -491,6 +500,11 @@ function clampEntities() {
   for (const pu of powerups) { pu.x = clamp(pu.x, 20, W - 20); pu.y = clamp(pu.y, 20, H - 20); }
 }
 
+const WISP_CAP = 8;
+// bonus wisps from depths and surges used to bypass the cap entirely, so a
+// long run silently filled the arena with dozens of them
+function spawnWispCapped() { if (wisps.length < WISP_CAP) spawnWisp(); }
+
 function spawnWisp() {
   let x, y, tries = 0;
   do {
@@ -607,7 +621,7 @@ function checkZone() {
        dropping to 35% speed for half a second read as the difficulty being
        reset. The jolt sells acceleration instead of a pause. */
     shake = Math.max(shake, 4.5);
-    for (let i = 0; i < 2; i++) spawnWisp();
+    for (let i = 0; i < 2; i++) spawnWispCapped();
   }
 }
 
@@ -750,8 +764,11 @@ function update(dt) {
     const dd = dist2(wsp.x, wsp.y, player.x, player.y);
     if (dd < 45 * 45) {
       const m = Math.sqrt(dd) || 1;
-      wsp.x += (player.x - wsp.x) / m * 70 * d;
-      wsp.y += (player.y - wsp.y) / m * 70 * d;
+      // Depth VI inverts this: the wisps shy away and must be cornered or dashed
+      // down. Slower than the player, so it is a chase and not a denial.
+      const pull = zoneIdx >= 5 ? -55 : 70;
+      wsp.x = clamp(wsp.x + (player.x - wsp.x) / m * pull * d, 12, W - 12);
+      wsp.y = clamp(wsp.y + (player.y - wsp.y) / m * pull * d, 12, H - 12);
     }
     if (dd < (player.r + wsp.r + 3) ** 2) {
       wisps.splice(i, 1);
@@ -762,7 +779,9 @@ function update(dt) {
       burst(wsp.x, wsp.y, "#ffffff", 5, 1.2, 0.3);
       shake = Math.max(shake, 1.5);
       spawnWisp();
-      if (wisps.length < 3 + Math.floor(score / 25)) spawnWisp();
+      // the cap used to grow unbounded with score — at a few hundred points the
+      // arena filled with wisps and collecting stopped being a decision
+      if (wisps.length < Math.min(3 + Math.floor(score / 25), WISP_CAP)) spawnWisp();
       addScore(combo);
       if (tutStage === 1) tutStage = 2;
     }
@@ -817,7 +836,7 @@ function update(dt) {
       const hardCap = Math.min(targetShades + 8, 24);
       const n = 4 + zoneIdx;
       for (let i = 0; i < n && shades.length < hardCap; i++) spawnShade();
-      for (let i = 0; i < 2; i++) spawnWisp();
+      for (let i = 0; i < 2; i++) spawnWispCapped();
       shake = Math.max(shake, 4);
       /* Wave pressure tightens across the whole run instead of only at the
          last depth, so the rhythm escalates alongside speed and numbers.
@@ -932,7 +951,8 @@ function update(dt) {
       burst(s.x, s.y, PAL.shade, 24, 3.5, 0.7);
       burst(s.x, s.y, PAL.danger, 8, 2, 0.4);
       shades.splice(shades.indexOf(s), 1);
-      if (s.type === "splitter" && !s.small) {
+      // Depth VIII: everything shatters, not just the splitters
+      if ((s.type === "splitter" || zoneIdx >= 7) && !s.small && shades.length < 22) {
         spawnSmallShade(s.x, s.y);
         spawnSmallShade(s.x, s.y);
       }
@@ -1105,6 +1125,14 @@ function render() {
 
   // shades
   for (const s of shades) {
+    /* Depth VII dims anything far from the ember. The glow is deliberately
+       left at full strength, so a distant shade is still a readable smudge
+       rather than an invisible instant death. */
+    let vis = 1;
+    if (zoneIdx >= 6) {
+      const dp = Math.hypot(s.x - player.x, s.y - player.y);
+      vis = clamp(1.25 - dp / 160, 0.28, 1);
+    }
     const r = s.r + Math.sin(s.wob * 2) * 1;
     const hot = s.type === "darter";
     const winding = s.windup > 0;
@@ -1125,12 +1153,14 @@ function render() {
       i === 0 ? wctx.moveTo(xx, yy) : wctx.lineTo(xx, yy);
     }
     wctx.closePath();
+    wctx.globalAlpha = vis;
     wctx.fill();
     // dark core + eye
     wctx.fillStyle = frosted ? "#2b4a63" : PAL.shadeDim;
     wctx.beginPath(); wctx.arc(s.x, s.y, r * 0.55, 0, TAU); wctx.fill();
     const dx = player.x - s.x, dy = player.y - s.y, m = Math.hypot(dx, dy) || 1;
     px(s.x + dx / m * 2 - 1.5, s.y + dy / m * 2 - 1.5, 3, 3, hot ? PAL.danger : "#e9c6ff");
+    wctx.globalAlpha = 1;
     // splitters get warning cracks
     if (s.type === "splitter") {
       wctx.strokeStyle = "rgba(233,198,255,0.5)";
