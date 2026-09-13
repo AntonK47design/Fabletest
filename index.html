@@ -229,6 +229,10 @@ const curHill = ZONES[0].hills.map(hexToRgb);
    capture phase, at window level — nothing can swallow the unlock. */
 let AC = null, muted = false, audioReady = false;
 let gestureCount = 0, beepTries = 0, sfxPulse = 0;   // nur fuer die Ton-Diagnose
+/* Developer instruments stay available but out of a player's way: they need
+   ?debug=1 in the URL. Shipping a key that plays a loud tone, or a panel of
+   internals, would read as a broken game. */
+const DEBUG = (() => { try { return new URLSearchParams(location.search).has("debug"); } catch (e) { return false; } })();
 let showDiag = false;
 /* Is AudioContext still the browser's own, or has something on the page
    replaced it? A platform that mutes games often does it by swapping the
@@ -348,8 +352,8 @@ window.addEventListener("keydown", e => {
   if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code)) e.preventDefault();
   firstInput();
   if (e.code === "KeyM") { muted = !muted; if (!muted) sfx.collect(1); return; }
-  if (e.code === "KeyI") { showDiag = !showDiag; return; }
-  if (e.code === "KeyT") { beep(440, 1.0, "sine", 0.35); return; }   // loud test tone
+  if (DEBUG && e.code === "KeyI") { showDiag = !showDiag; return; }
+  if (DEBUG && e.code === "KeyT") { beep(440, 1.0, "sine", 0.35); return; }
   if (state === "over") { tryRestart(); return; }
   if (e.code === "Space") wantDash = true;
 });
@@ -1279,11 +1283,11 @@ function render() {
     if (Math.sin(t * 3) > -0.5) {
       drawText("tap here for sound", SPK.x + 14, SPK.y - 3, 9, PAL.gold, "left");
     }
-    // one compact line that says WHY, so a silent embed can be diagnosed
-    // from a screenshot instead of guesswork
-    const st = AC ? AC.state : "none";
-    drawText(`ctx=${st} gest=${gestureCount} snd=${beepTries} mute=${muted ? 1 : 0}/${sdkMuted ? 1 : 0} sdk=${CG.ready ? 1 : 0}`,
-             SPK.x + 14, SPK.y + 8, 7, PAL.textDim, "left");
+    if (DEBUG) {
+      const st = AC ? AC.state : "none";
+      drawText(`ctx=${st} gest=${gestureCount} snd=${beepTries} mute=${muted ? 1 : 0}/${sdkMuted ? 1 : 0} sdk=${CG.ready ? 1 : 0}`,
+               SPK.x + 14, SPK.y + 8, 7, PAL.textDim, "left");
+    }
   }
 
   // audio diagnostics panel: press I. Deliberately reachable at any time,
@@ -1315,7 +1319,7 @@ function render() {
     if (audioMuted()) {
       for (let i = 0; i < 5; i++) { px(x + 2 + i, y - 4 + i, 1, 1, c); px(x + 6 - i, y - 4 + i, 1, 1, c); }
     } else {
-      const live = sfxPulse > 0 ? PAL.wisp : c;
+      const live = (DEBUG && sfxPulse > 0) ? PAL.wisp : c;
       px(x + 2, y - 3, 1, 6, live);
       px(x + 5, y - 5, 1, 10, live);
     }
