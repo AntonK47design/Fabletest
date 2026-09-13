@@ -229,6 +229,14 @@ const curHill = ZONES[0].hills.map(hexToRgb);
    capture phase, at window level — nothing can swallow the unlock. */
 let AC = null, muted = false, audioReady = false;
 let gestureCount = 0, beepTries = 0, sfxPulse = 0;   // nur fuer die Ton-Diagnose
+let showDiag = false;
+/* Is AudioContext still the browser's own, or has something on the page
+   replaced it? A platform that mutes games often does it by swapping the
+   constructor or routing through its own master gain. */
+function acIsNative() {
+  try { return /\[native code\]/.test(String(window.AudioContext || window.webkitAudioContext)); }
+  catch (e) { return null; }
+}
 /* CrazyGames requires platform mute to take priority over the in-game
    toggle, so audio plays only when BOTH are unmuted. Flipping the in-game
    speaker can never re-enable sound while the platform has muted us. */
@@ -340,6 +348,8 @@ window.addEventListener("keydown", e => {
   if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code)) e.preventDefault();
   firstInput();
   if (e.code === "KeyM") { muted = !muted; if (!muted) sfx.collect(1); return; }
+  if (e.code === "KeyI") { showDiag = !showDiag; return; }
+  if (e.code === "KeyT") { beep(440, 1.0, "sine", 0.35); return; }   // loud test tone
   if (state === "over") { tryRestart(); return; }
   if (e.code === "Space") wantDash = true;
 });
@@ -1274,6 +1284,24 @@ function render() {
     const st = AC ? AC.state : "none";
     drawText(`ctx=${st} gest=${gestureCount} snd=${beepTries} mute=${muted ? 1 : 0}/${sdkMuted ? 1 : 0} sdk=${CG.ready ? 1 : 0}`,
              SPK.x + 14, SPK.y + 8, 7, PAL.textDim, "left");
+  }
+
+  // audio diagnostics panel: press I. Deliberately reachable at any time,
+  // because "the game emits sound but nothing is audible" can only be told
+  // apart from a stalled clock or a swapped AudioContext by reading these.
+  if (showDiag) {
+    const ac = AC;
+    const lines = [
+      `ctx=${ac ? ac.state : "none"}  clock=${ac ? ac.currentTime.toFixed(2) : "-"}  rate=${ac ? ac.sampleRate : "-"}`,
+      `sounds=${beepTries}  gestures=${gestureCount}  mute=${muted ? 1 : 0}/${sdkMuted ? 1 : 0}  sdk=${CG.ready ? 1 : 0}`,
+      `AudioContext native=${acIsNative() === null ? "?" : (acIsNative() ? "yes" : "NO - replaced")}  out=${ac ? ac.destination.channelCount : "-"}`,
+      `T = test tone     I = hide`
+    ];
+    wctx.globalAlpha = 0.85;
+    wctx.fillStyle = "#0b0a14";
+    wctx.fillRect(8, 30, Math.min(W - 16, 260), 4 + lines.length * 11);
+    wctx.globalAlpha = 1;
+    lines.forEach((l, i) => drawText(l, 14, 40 + i * 11, 8, i === 3 ? PAL.textDim : PAL.text, "left"));
   }
 
   // speaker / mute toggle — always visible so audio state is never a mystery
